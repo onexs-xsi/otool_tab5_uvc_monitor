@@ -1,0 +1,3 @@
+## IDF component manifest for main
+dependencies:
+  idf: '>=6.0'
