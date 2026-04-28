@@ -4,6 +4,7 @@
 // 文件内静态前向声明（事件回调互相引用）
 static void check_close_cb(lv_event_t *e);
 static void btn_check_cb(lv_event_t *e);
+static void btn_reinit_cb(lv_event_t *e);
 
 // ===================================================================
 // LVGL selection UI
@@ -384,6 +385,22 @@ static void check_close_cb(lv_event_t *e)
     if (a->status_lbl) lv_label_set_text(a->status_lbl, "CHECK finished. Select mode and press START");
 }
 
+// REINIT 按钮：在选择/等待界面手动让 USB 摄像头掉电再上电，便于摄像头卡死时恢复。
+static void btn_reinit_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    if (a->check_running) return;
+    if (a->state == APP_STATE_STREAMING) {
+        if (a->status_lbl) lv_label_set_text(a->status_lbl, "Stop the stream before REINIT");
+        return;
+    }
+    if (a->status_lbl) lv_label_set_text(a->status_lbl, "REINIT: cycling USB power...");
+    if (a->confirm_btn) lv_obj_add_state(a->confirm_btn, LV_STATE_DISABLED);
+    if (a->check_btn)   lv_obj_add_state(a->check_btn, LV_STATE_DISABLED);
+    app_request_usb_reinit(a);
+}
+
 void ui_style_mode_item(lv_obj_t *item, bool selected)
 {
     // 白色简约：选中蓝边+浅蓝背景，未选中灰边白底
@@ -500,7 +517,7 @@ void ui_build_selection(app_t *a)
     lv_obj_clear_flag(accent_bar, LV_OBJ_FLAG_CLICKABLE);
 
     a->title_lbl = lv_label_create(left_panel);
-    lv_label_set_text(a->title_lbl, "UVC Camera Modes");
+    lv_label_set_text(a->title_lbl, "OTool Tab5 UVC Monitor");
     lv_obj_set_style_text_color(a->title_lbl, lv_color_make(0x0F, 0x17, 0x2A), 0);
     lv_obj_set_style_text_font(a->title_lbl, &lv_font_montserrat_24, 0);
     lv_obj_align(a->title_lbl, LV_ALIGN_TOP_LEFT, 18, 0);
@@ -583,11 +600,26 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_pad_right(ftr, 18, 0);
 
     a->status_lbl = lv_label_create(ftr);
-    lv_obj_set_width(a->status_lbl, content_w - 360);
+    lv_obj_set_width(a->status_lbl, content_w - 520);
     lv_label_set_long_mode(a->status_lbl, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(a->status_lbl, lv_color_make(0x64, 0x74, 0x8B), 0);
     lv_obj_align(a->status_lbl, LV_ALIGN_LEFT_MID, 0, 0);
     lv_label_set_text(a->status_lbl, "Waiting for USB camera...");
+
+    // REINIT 按钮：放在 CHECK 左侧，用于在不影响其余 UI 的前提下复位 USB 摄像头电源。
+    a->reinit_btn = lv_button_create(ftr);
+    lv_obj_set_size(a->reinit_btn, 136, 46);
+    lv_obj_align(a->reinit_btn, LV_ALIGN_RIGHT_MID, -336, 0);
+    lv_obj_set_style_radius(a->reinit_btn, 12, 0);
+    lv_obj_set_style_bg_color(a->reinit_btn, lv_color_make(0xB4, 0x53, 0x09), 0);
+    lv_obj_set_style_bg_color(a->reinit_btn, lv_color_make(0xFE, 0xD7, 0xAA), LV_STATE_DISABLED);
+    lv_obj_set_style_shadow_width(a->reinit_btn, 0, 0);
+    lv_obj_add_event_cb(a->reinit_btn, btn_reinit_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *re_lbl = lv_label_create(a->reinit_btn);
+    lv_label_set_text(re_lbl, "REINIT");
+    lv_obj_set_style_text_font(re_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(re_lbl, lv_color_white(), 0);
+    lv_obj_center(re_lbl);
 
     a->check_btn = lv_button_create(ftr);
     lv_obj_set_size(a->check_btn, 136, 46);

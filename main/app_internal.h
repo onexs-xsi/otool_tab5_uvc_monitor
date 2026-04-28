@@ -85,6 +85,8 @@
 #define EV_USER_CONFIRMED   (1 << 1)
 #define EV_DEV_LOST         (1 << 2)
 #define EV_UAC_CONNECTED    (1 << 3)
+// 用户在选择界面或主界面请求重新上电 USB 摄像头（仅当未在 streaming 状态时生效）
+#define EV_REINIT_REQUESTED (1 << 4)
 
 #define IV_TO_FPS(iv)       (((iv) > 0) ? (10000000.0f / (float)(iv)) : 15.0f)
 
@@ -185,6 +187,7 @@ typedef struct {
     lv_obj_t               *uac_lbl;
     lv_obj_t               *confirm_btn;
     lv_obj_t               *check_btn;
+    lv_obj_t               *reinit_btn;
     lv_obj_t               *status_lbl;
     lv_obj_t               *info_mode_lbl;
     lv_obj_t               *info_device_lbl;
@@ -247,6 +250,10 @@ void uac_driver_event_cb(uint8_t addr, uint8_t iface_num,
 
 // usb_task.cpp
 void usb_lib_task(void *arg);
+
+// main.cpp - 由 UI 触发的 USB 摄像头电源循环（VBUS 关 -> 延时 -> 开），
+// 用于卡死或主控复位后的快速恢复；非阻塞，会创建一个一次性辅助任务。
+void app_request_usb_reinit(app_t *a);
 
 // ui_selection.cpp
 void ui_build_selection(app_t *a);

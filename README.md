@@ -1,10 +1,12 @@
 # otool_tab5_uvc_monitor
 
 <!-- Header image 1 — replace with actual path after uploading -->
-![Banner](docs/images/banner1.jpg)
+
+![Banner](docs\images\ab75415d0da65015a60a9da4fd9a0083.jpg)
 
 <!-- Header image 2 — replace with actual path after uploading -->
-![Preview](docs/images/banner2.jpg)
+
+![Preview](docs\images\b9e99310fcb08c53ca89fa6c49421003.jpg)
 
 Real-time UVC camera display demo for **M5 TAB5 (ESP32-P4)**. Streams video from a USB UVC camera to the built-in DSI panel, with optional UAC audio playback/recording and an LVGL-based stream-selection UI.
 
@@ -24,13 +26,13 @@ Real-time UVC camera display demo for **M5 TAB5 (ESP32-P4)**. Streams video from
 
 ## Hardware
 
-| Item | Detail |
-|------|--------|
-| Board | M5 TAB5 |
-| SoC | ESP32-P4 (RISC-V dual-core 400 MHz) |
+| Item    | Detail                                          |
+| ------- | ----------------------------------------------- |
+| Board   | M5 TAB5                                         |
+| SoC     | ESP32-P4 (RISC-V dual-core 400 MHz)             |
 | Display | DSI 720×1280 (rendered as 1280×720 landscape) |
-| Camera | Any USB UVC-compliant camera |
-| Audio | USB UAC device (optional) |
+| Camera  | Any USB UVC-compliant camera                    |
+| Audio   | USB UAC device (optional)                       |
 
 ---
 
@@ -89,14 +91,15 @@ idf.py -p <PORT> flash monitor
 
 Key `sdkconfig` options (configurable via `idf.py menuconfig`):
 
-| Option | Description |
-|--------|-------------|
-| `CONFIG_UVC_*` | UVC driver buffer sizes and task priorities |
-| `CONFIG_UAC_*` | UAC ring-buffer depth and sample rate |
-| `CONFIG_LVGL_*` | LVGL task stack / tick period |
+| Option          | Description                                 |
+| --------------- | ------------------------------------------- |
+| `CONFIG_UVC_*`  | UVC driver buffer sizes and task priorities |
+| `CONFIG_UAC_*`  | UAC ring-buffer depth and sample rate       |
+| `CONFIG_LVGL_*` | LVGL task stack / tick period               |
 
 ---
 
 ## License
 
 See individual component directories for their respective licenses.
+

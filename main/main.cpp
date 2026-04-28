@@ -12,6 +12,8 @@
 //
 // 本文件仅保留 app_main，其余功能拆分到独立模块（见 app_internal.h）。
 
+#include <atomic>
+
 #include "app_internal.h"
 
 #include "M5Autodetect.h"
@@ -23,6 +25,54 @@
 const char *TAG = "uvc_cam";
 app_t s_app;
 portMUX_TYPE s_audio_scope_lock = portMUX_INITIALIZER_UNLOCKED;
+
+// TAB5 板级组件全局实例，供 REINIT 路径重新控制 USB5V 使用。
+static m5::tab5::otool_tab5_component s_comp;
+static std::atomic<bool> s_reinit_in_flight{false};
+
+static void usb_reinit_task(void *arg)
+{
+    app_t *aa = (app_t *)arg;
+    ESP_LOGI(TAG, "REINIT: powering USB5V OFF");
+    esp_err_t err = s_comp.usb5v_enable(false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "REINIT: usb5v OFF returned %s", esp_err_to_name(err));
+    }
+    if (aa) ui_set_status(aa, "USB power OFF, waiting...");
+    vTaskDelay(pdMS_TO_TICKS(800));
+    ESP_LOGI(TAG, "REINIT: powering USB5V ON");
+    err = s_comp.usb5v_enable(true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "REINIT: usb5v ON returned %s", esp_err_to_name(err));
+    }
+    if (aa) ui_set_status(aa, "USB power restored, waiting for camera...");
+    s_reinit_in_flight.store(false, std::memory_order_release);
+    vTaskDelete(nullptr);
+}
+
+void app_request_usb_reinit(app_t *a)
+{
+    if (!a) return;
+    if (a->state == APP_STATE_STREAMING) {
+        ESP_LOGW(TAG, "REINIT ignored: streaming in progress");
+        ui_set_status(a, "Stop the stream before REINIT");
+        return;
+    }
+    bool expected = false;
+    if (!s_reinit_in_flight.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        ESP_LOGW(TAG, "REINIT already in progress");
+        return;
+    }
+    // 主动通知状态机：让选择面板及时清空模式列表。
+    if (a->events) xEventGroupSetBits(a->events, EV_DEV_LOST | EV_REINIT_REQUESTED);
+    BaseType_t ok = xTaskCreatePinnedToCore(usb_reinit_task, "usb_reinit", 4096, a,
+                                            5, nullptr, tskNO_AFFINITY);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "REINIT: task create failed");
+        s_reinit_in_flight.store(false, std::memory_order_release);
+        ui_set_status(a, "REINIT task create failed");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // app_main
@@ -54,7 +104,7 @@ extern "C" void app_main(void)
     // ------------------------------------------------------------------
     // 2. TAB5 组件初始化
     // ------------------------------------------------------------------
-    static m5::tab5::otool_tab5_component comp;
+    auto &comp = s_comp;
     m5::tab5::otool_tab5_component_config_t comp_cfg;
     comp_cfg.variant_id              = vid;
     comp_cfg.enable_optional_drivers = true;
@@ -209,11 +259,15 @@ extern "C" void app_main(void)
             otool_lvgl_port_unlock();
         }
 
-        // 等待用户确认、设备断开或稍后检测到 UAC。
+        // 等待用户确认、设备断开、热插拔重连，或稍后检测到 UAC。
         while (true) {
             EventBits_t bits = xEventGroupWaitBits(s_app.events,
-                                                   EV_USER_CONFIRMED | EV_DEV_LOST | EV_UAC_CONNECTED,
+                                                   EV_USER_CONFIRMED | EV_DEV_LOST | EV_DEV_CONNECTED |
+                                                       EV_UAC_CONNECTED | EV_REINIT_REQUESTED,
                                                    pdTRUE, pdFALSE, portMAX_DELAY);
+            if (bits & EV_REINIT_REQUESTED) {
+                ESP_LOGI(TAG, "REINIT request observed in selecting state");
+            }
             if (bits & EV_UAC_CONNECTED) {
                 if (otool_lvgl_port_lock(50)) {
                     ui_update_uac_option(&s_app);
@@ -229,6 +283,33 @@ extern "C" void app_main(void)
                     if (s_app.check_btn)
                         lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
                     ui_clear_mode_list(&s_app);
+                    ui_update_info_panel(&s_app);
+                    otool_lvgl_port_unlock();
+                }
+                s_app.mode_count = 0;
+                s_app.selected_mode = 0;
+                continue;
+            }
+            if (bits & EV_DEV_CONNECTED) {
+                // 热插拔：摄像头重新上电后会以新地址枚举，这里刷新选择面板。
+                ESP_LOGI(TAG, "Hot-plug: device reconnected, refreshing mode list");
+                if (otool_lvgl_port_lock(0)) {
+                    ui_populate_mode_list(&s_app);
+                    if (s_app.status_lbl)
+                        lv_label_set_text(s_app.status_lbl, "Select mode and press START");
+                    ui_update_uac_option(&s_app);
+                    if (s_app.confirm_btn) {
+                        if (s_app.mode_count > 0)
+                            lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
+                        else
+                            lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
+                    }
+                    if (s_app.check_btn) {
+                        if (s_app.mode_count > 0 && !s_app.check_running)
+                            lv_obj_clear_state(s_app.check_btn, LV_STATE_DISABLED);
+                        else
+                            lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
+                    }
                     ui_update_info_panel(&s_app);
                     otool_lvgl_port_unlock();
                 }
@@ -324,7 +405,7 @@ extern "C" void app_main(void)
         s_app.mode_count = 0;
         s_app.selected_mode = 0;
         s_app.uac_selected = false;
-        xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED);
+        xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
     }
     // unreachable
 }
