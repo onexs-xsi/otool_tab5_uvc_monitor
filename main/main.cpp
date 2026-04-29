@@ -6,7 +6,7 @@
 //   3. LVGL 选择 UI 显示 MJPEG/YUY2 模式，并提供可选 UAC 音频开关
 //   4. LVGL 停止（otool_lvgl_port_stop）
 //   5. 视频流显示：MJPEG -> 硬件 JPEG 解码，YUY2 -> 软件转 RGB565 -> PPA -> draw_bitmap
-//      若启用 UAC，在视频上叠加滚动音频图谱与录音控件
+//      若启用 UAC/ADV，在视频 framebuffer 上直接叠加触摸控件
 //      非 720p 分辨率会自动等比缩放到屏幕
 //   6. 相机断开 -> 返回 LVGL 选择 UI
 //
@@ -333,15 +333,15 @@ extern "C" void app_main(void)
 
         // --- Phase B: 视频流 ---
         s_app.state = APP_STATE_STREAMING;
-
+        s_app.stream_lvgl_ui = false;
         otool_lvgl_port_stop();
 
         ESP_LOGI(TAG, "Free SPIRAM before open: %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-        if (!open_stream(&s_app, s_app.selected_mode)) {
-            ESP_LOGE(TAG, "Failed to open stream");
+        if (!alloc_stream_resources(&s_app)) {
+            ESP_LOGE(TAG, "Failed to alloc stream buffers");
             otool_lvgl_port_resume();
-            ui_set_status(&s_app, "Stream open failed, select again");
+            ui_set_status(&s_app, "Stream buffer alloc failed");
             if (otool_lvgl_port_lock(50)) {
                 if (s_app.confirm_btn)
                     lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
@@ -354,14 +354,13 @@ extern "C" void app_main(void)
             continue;
         }
 
-        if (!alloc_stream_resources(&s_app)) {
-            ESP_LOGE(TAG, "Failed to alloc stream buffers");
-            uvc_host_stream_stop(s_app.stream_hdl);
-            drain_queue(&s_app);
-            uvc_host_stream_close(s_app.stream_hdl);
-            s_app.stream_hdl = nullptr;
+        panel_clear(&s_app);
+
+        if (!open_stream(&s_app, s_app.selected_mode)) {
+            ESP_LOGE(TAG, "Failed to open stream");
+            free_stream_resources(&s_app);
             otool_lvgl_port_resume();
-            ui_set_status(&s_app, "Stream buffer alloc failed");
+            ui_set_status(&s_app, "Stream open failed, select again");
             if (otool_lvgl_port_lock(50)) {
                 if (s_app.confirm_btn)
                     lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
@@ -377,8 +376,6 @@ extern "C" void app_main(void)
         if (s_app.uac_selected && !start_uac_stream(&s_app)) {
             ESP_LOGW(TAG, "UAC selected but audio stream was not started");
         }
-
-        panel_clear(&s_app);
 
         xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED);
 
@@ -400,6 +397,7 @@ extern "C" void app_main(void)
 
         free_stream_resources(&s_app);
 
+        ui_destroy_stream_overlay(&s_app);
         otool_lvgl_port_resume();
         s_app.state = APP_STATE_WAITING_USB;
 
@@ -421,6 +419,7 @@ extern "C" void app_main(void)
         s_app.uac_selected = false;
         s_app.adv_live_enabled = false;
         s_app.adv_touch_down = false;
+        s_app.stream_lvgl_ui = false;
         xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
     }
     // unreachable

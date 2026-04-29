@@ -332,7 +332,11 @@ static void list_item_cb(lv_event_t *e)
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
     int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
     if (idx < 0 || idx >= (int)a->mode_count) return;
-    // 不做分辨率限制
+    // 超过选择上限的模式仅可见, 不允许选中.
+    if (!mode_is_selectable(&a->modes[idx])) {
+        ui_set_status(a, "This mode exceeds 1280x720 cap and is view-only");
+        return;
+    }
 
     // 清除所有项高亮
     uint32_t cnt = lv_obj_get_child_count(a->list_obj);
@@ -353,6 +357,10 @@ static void btn_confirm_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (a->check_running) return;
     if (a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return;
+    if (!mode_is_selectable(&a->modes[a->selected_mode])) {
+        ui_set_status(a, "Pick a mode at or below 1280x720 to continue");
+        return;
+    }
     a->uac_selected = a->uac_rx_available && a->uac_switch &&
                       lv_obj_has_state(a->uac_switch, LV_STATE_CHECKED);
     a->adv_live_enabled = adv_any_supported(a) && a->adv_switch &&
@@ -469,9 +477,12 @@ static void adv_widget_changed_cb(lv_event_t *e)
     if (new_val > d->v_max) new_val = d->v_max;
     d->v_cur = new_val;
 
-    // 立即下发；若流未打开则标记 pending，下次 open_stream 后回放。
+    // 立即下发；若流未打开或该项不适合 live 修改，则标记 pending，下次 stream_start 前回放。
     esp_err_t err = ESP_FAIL;
-    if (a->stream_hdl) {
+    bool deferred = false;
+    if (a->stream_hdl && !cam_ctrl_is_live_safe(d)) {
+        deferred = true;
+    } else if (a->stream_hdl) {
         err = cam_ctrl_set_int(a->stream_hdl, d, d->v_cur);
     }
     if (err != ESP_OK) {
@@ -483,7 +494,7 @@ static void adv_widget_changed_cb(lv_event_t *e)
     if (a->adv_status_lbl) {
         char buf[80];
         snprintf(buf, sizeof(buf), "%s = %ld%s", d->name, (long)d->v_cur,
-                 (err == ESP_OK) ? "" : " (pending)");
+                 (err == ESP_OK) ? "" : (deferred ? " (next start)" : " (pending)"));
         lv_label_set_text(a->adv_status_lbl, buf);
     }
 }
@@ -733,6 +744,137 @@ void ui_update_advanced_button(app_t *a)
     }
 }
 
+void ui_build_stream_overlay(app_t *a)
+{
+    if (!a) return;
+    if (!otool_lvgl_port_lock(100)) return;
+
+    if (a->stream_overlay) {
+        lv_obj_delete(a->stream_overlay);
+        a->stream_overlay = nullptr;
+        a->stream_adv_panel = nullptr;
+        a->stream_audio_panel = nullptr;
+        a->stream_status_lbl = nullptr;
+    }
+    if (a->sel_screen) {
+        lv_obj_add_flag(a->sel_screen, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    lv_obj_t *scr = lv_scr_act();
+    a->stream_overlay = lv_obj_create(scr);
+    lv_obj_set_size(a->stream_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_align(a->stream_overlay, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_opa(a->stream_overlay, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(a->stream_overlay, 0, 0);
+    lv_obj_set_style_radius(a->stream_overlay, 0, 0);
+    lv_obj_set_style_pad_all(a->stream_overlay, 0, 0);
+    lv_obj_clear_flag(a->stream_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *badge = lv_obj_create(a->stream_overlay);
+    lv_obj_set_size(badge, 238, 52);
+    lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 18, 16);
+    lv_obj_set_style_bg_color(badge, lv_color_make(0x02, 0x08, 0x12), 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(badge, 1, 0);
+    lv_obj_set_style_border_color(badge, lv_color_make(0x22, 0xD3, 0xEE), 0);
+    lv_obj_set_style_radius(badge, 14, 0);
+    lv_obj_set_style_pad_all(badge, 10, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+
+    char badge_text[80];
+    snprintf(badge_text, sizeof(badge_text), "LIVE%s%s",
+             a->uac_selected ? " / UAC" : "",
+             a->adv_live_enabled ? " / ADV" : "");
+    a->stream_status_lbl = lv_label_create(badge);
+    lv_label_set_text(a->stream_status_lbl, badge_text);
+    lv_obj_set_style_text_color(a->stream_status_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(a->stream_status_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_center(a->stream_status_lbl);
+
+    if (a->uac_selected) {
+        a->stream_audio_panel = lv_obj_create(a->stream_overlay);
+        lv_obj_set_size(a->stream_audio_panel, 360, 72);
+        lv_obj_align(a->stream_audio_panel, LV_ALIGN_BOTTOM_LEFT, 18, -18);
+        lv_obj_set_style_bg_color(a->stream_audio_panel, lv_color_make(0x02, 0x08, 0x12), 0);
+        lv_obj_set_style_bg_opa(a->stream_audio_panel, LV_OPA_60, 0);
+        lv_obj_set_style_border_width(a->stream_audio_panel, 1, 0);
+        lv_obj_set_style_border_color(a->stream_audio_panel, lv_color_make(0x34, 0xD3, 0x99), 0);
+        lv_obj_set_style_radius(a->stream_audio_panel, 16, 0);
+        lv_obj_clear_flag(a->stream_audio_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t *audio_lbl = lv_label_create(a->stream_audio_panel);
+        lv_label_set_text(audio_lbl, "UAC audio active\nRecord/play panel remains on video");
+        lv_obj_set_style_text_color(audio_lbl, lv_color_make(0xD1, 0xFA, 0xE5), 0);
+        lv_obj_align(audio_lbl, LV_ALIGN_LEFT_MID, 14, 0);
+    }
+
+    if (a->adv_live_enabled && adv_any_supported(a)) {
+        a->stream_adv_panel = lv_obj_create(a->stream_overlay);
+        lv_obj_set_size(a->stream_adv_panel, 380, PANEL_LOGIC_H - 28);
+        lv_obj_align(a->stream_adv_panel, LV_ALIGN_RIGHT_MID, -14, 0);
+        ui_set_panel_style(a->stream_adv_panel, lv_color_white(), 16);
+        lv_obj_set_style_bg_opa(a->stream_adv_panel, LV_OPA_90, 0);
+        lv_obj_set_style_pad_all(a->stream_adv_panel, 12, 0);
+        lv_obj_set_style_pad_row(a->stream_adv_panel, 6, 0);
+        lv_obj_set_layout(a->stream_adv_panel, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(a->stream_adv_panel, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(a->stream_adv_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_scrollbar_mode(a->stream_adv_panel, LV_SCROLLBAR_MODE_AUTO);
+
+        lv_obj_t *title = lv_label_create(a->stream_adv_panel);
+        lv_label_set_text(title, "Camera advanced");
+        lv_obj_set_style_text_color(title, kColTitle, 0);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+        lv_obj_set_height(title, 30);
+
+        a->adv_status_lbl = lv_label_create(a->stream_adv_panel);
+        lv_label_set_long_mode(a->adv_status_lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(a->adv_status_lbl, lv_pct(100));
+        lv_obj_set_height(a->adv_status_lbl, 24);
+        lv_obj_set_style_text_color(a->adv_status_lbl, kColMuted, 0);
+        lv_label_set_text(a->adv_status_lbl, "Live control: changes are verified by GET_CUR");
+
+        for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+            if (a->adv_caps[i].supported) adv_build_row(a, a->stream_adv_panel, i);
+        }
+    }
+
+    lv_obj_move_foreground(a->stream_overlay);
+    lv_obj_invalidate(a->stream_overlay);
+    otool_lvgl_port_unlock();
+}
+
+void ui_refresh_stream_overlay(app_t *a)
+{
+    if (!a || !a->stream_lvgl_ui || !a->stream_overlay) return;
+    if (!otool_lvgl_port_lock(0)) return;
+    lv_obj_move_foreground(a->stream_overlay);
+    if (a->stream_status_lbl) {
+        lv_obj_t *badge = lv_obj_get_parent(a->stream_status_lbl);
+        if (badge) lv_obj_invalidate(badge);
+    }
+    if (a->stream_audio_panel) lv_obj_invalidate(a->stream_audio_panel);
+    if (a->stream_adv_panel) lv_obj_invalidate(a->stream_adv_panel);
+    otool_lvgl_port_unlock();
+}
+
+void ui_destroy_stream_overlay(app_t *a)
+{
+    if (!a) return;
+    if (!otool_lvgl_port_lock(100)) return;
+    if (a->stream_overlay) {
+        lv_obj_delete(a->stream_overlay);
+    }
+    a->stream_overlay = nullptr;
+    a->stream_adv_panel = nullptr;
+    a->stream_audio_panel = nullptr;
+    a->stream_status_lbl = nullptr;
+    a->adv_status_lbl = nullptr;
+    if (a->sel_screen) {
+        lv_obj_clear_flag(a->sel_screen, LV_OBJ_FLAG_HIDDEN);
+    }
+    otool_lvgl_port_unlock();
+}
+
 void ui_style_mode_item(lv_obj_t *item, bool selected)
 {
     // 白色简约：选中蓝边+浅蓝背景，未选中灰边白底
@@ -755,8 +897,9 @@ void ui_populate_mode_list(app_t *a)
 
     for (int i = 0; i < (int)a->mode_count; i++) {
         const cam_mode_t *m = &a->modes[i];
+        const bool selectable = mode_is_selectable(m);
 
-        char res_buf[32];
+        char res_buf[40];
         char fps_buf[24];
         lv_obj_t *btn = lv_button_create(a->list_obj);
         lv_obj_set_width(btn, lv_pct(100));
@@ -768,17 +911,25 @@ void ui_populate_mode_list(app_t *a)
         lv_obj_set_user_data(btn, (void *)(intptr_t)i);
         lv_obj_add_event_cb(btn, list_item_cb, LV_EVENT_CLICKED, a);
 
-        snprintf(res_buf, sizeof(res_buf), "%ux%u", m->w, m->h);
+        if (selectable) {
+            snprintf(res_buf, sizeof(res_buf), "%ux%u", m->w, m->h);
+        } else {
+            snprintf(res_buf, sizeof(res_buf), "%ux%u  (>720p, view only)", m->w, m->h);
+        }
         lv_obj_t *res_lbl = lv_label_create(btn);
         lv_label_set_text(res_lbl, res_buf);
         lv_obj_set_style_text_font(res_lbl, &lv_font_montserrat_24, 0);
-        lv_obj_set_style_text_color(res_lbl, lv_color_make(0x1E, 0x29, 0x3B), 0);
+        lv_obj_set_style_text_color(res_lbl,
+            selectable ? lv_color_make(0x1E, 0x29, 0x3B)
+                       : lv_color_make(0x94, 0xA3, 0xB8), 0);
         lv_obj_align(res_lbl, LV_ALIGN_LEFT_MID, 0, -10);
 
         snprintf(fps_buf, sizeof(fps_buf), "%.1f fps", m->fps);
         lv_obj_t *fps_lbl = lv_label_create(btn);
         lv_label_set_text(fps_lbl, fps_buf);
-        lv_obj_set_style_text_color(fps_lbl, lv_color_make(0x3B, 0x82, 0xF6), 0);
+        lv_obj_set_style_text_color(fps_lbl,
+            selectable ? lv_color_make(0x3B, 0x82, 0xF6)
+                       : lv_color_make(0x94, 0xA3, 0xB8), 0);
         lv_obj_align(fps_lbl, LV_ALIGN_RIGHT_MID, 0, -10);
 
         lv_obj_t *fmt_lbl = lv_label_create(btn);
@@ -790,6 +941,13 @@ void ui_populate_mode_list(app_t *a)
             ui_style_mode_item(btn, true);
         } else {
             ui_style_mode_item(btn, false);
+        }
+        if (!selectable) {
+            // 视觉上变灰, 仍保留点击以作为 "why disabled" 提示 (list_item_cb 里处理).
+            lv_obj_set_style_bg_color(btn, lv_color_make(0xF1, 0xF5, 0xF9), 0);
+            lv_obj_set_style_border_color(btn, lv_color_make(0xCB, 0xD5, 0xE1), 0);
+            lv_obj_set_style_border_width(btn, 1, 0);
+            lv_obj_set_style_shadow_width(btn, 0, 0);
         }
     }
 }

@@ -43,14 +43,20 @@
 // 硬件 JPEG + PPA 可处理的最大源分辨率
 #define CAM_MAX_SRC_W       1920
 #define CAM_MAX_SRC_H       1080
+// 用户可选的最大分辨率上限：超过该上限的模式仍会出现在列表里 (info-only),
+// 但会被 ui_selection 标灰、无法点击；流水线 (JPEG/PPA/SPIRAM 带宽)
+// 在 1280x720@MJPEG 已经基本跑满, 更高分辨率几乎肯定 underflow.
+#define CAM_MAX_SELECT_W    1280
+#define CAM_MAX_SELECT_H    720
 // 解码缓冲：按最大源分辨率分配 RGB565
 #define DECODE_BUF_SIZE     ((size_t)CAM_MAX_SRC_W * CAM_MAX_SRC_H * 2)
 // 屏幕缓冲：始终为物理屏大小
 #define PANEL_BUF_SIZE      ((size_t)PANEL_PHYS_W * PANEL_PHYS_H * 2)
+#define PANEL_DIRTY_RECT_MAX 8
 
 #define CAM_MAX_CANDIDATES  64
-#define CAM_FRAME_CNT       4
-#define CAM_QUEUE_DEPTH     4
+#define CAM_FRAME_CNT       6
+#define CAM_QUEUE_DEPTH     1
 #define CAM_URB_CNT         3
 #define CAM_URB_SIZE        (16 * 1024)
 #define CAM_SAFE_MAX_PIXELS (640u * 480u)
@@ -143,6 +149,13 @@ typedef enum {
     AUDIO_REC_PLAYING,
 } audio_rec_state_t;
 
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+} panel_dirty_rect_t;
+
 // 单个 UVC 实体控件能力描述（从 Cam 端 GET_INFO/GET_MIN/MAX/DEF 收集）
 typedef struct {
     uint8_t  entity_id;     // PU=3, XU=4
@@ -219,6 +232,8 @@ typedef struct {
     uint8_t                *decode_buf;
     size_t                  decode_buf_size;
     uint8_t                *panel_buf;
+    panel_dirty_rect_t      panel_dirty[PANEL_DIRTY_RECT_MAX];
+    uint8_t                 panel_dirty_count;
     lv_display_t           *lv_disp;
     lv_indev_t             *lv_touch_indev;
     esp_lcd_touch_handle_t  touch_handle;
@@ -244,7 +259,7 @@ typedef struct {
     volatile bool           check_running;
     TaskHandle_t            check_task;
 
-    // ADVANCED 控制面板（选择屏用 LVGL，视频屏用 direct overlay）
+    // ADVANCED 控制面板（选择屏用 LVGL，视频屏直接绘制到视频帧）
     lv_obj_t               *adv_container;    // 选择屏 Advanced 容器
     lv_obj_t               *adv_switch;       // 是否在视频界面常驻显示配置侧栏
     lv_obj_t               *adv_lbl;          // Advanced 开关说明
@@ -254,6 +269,13 @@ typedef struct {
     lv_obj_t               *adv_status_lbl;   // 状态/提示文本
     bool                    adv_live_enabled; // START 后是否显示右侧高级配置侧栏
     bool                    adv_touch_down;   // 视频侧栏触摸消抖
+
+    // 旧 LVGL streaming overlay 句柄保留用于清理兼容；当前视频阶段直接绘制，避免 DSI 整屏 flush 盖住视频。
+    bool                    stream_lvgl_ui;
+    lv_obj_t               *stream_overlay;
+    lv_obj_t               *stream_adv_panel;
+    lv_obj_t               *stream_audio_panel;
+    lv_obj_t               *stream_status_lbl;
 
     // 摄像头能力
     cam_ctrl_desc_t         adv_caps[CAM_ADV_CTRL_COUNT];
@@ -280,6 +302,8 @@ const char *uvc_format_name(enum uvc_host_stream_format fmt);
 const char *uvc_stream_event_name(enum uvc_host_dev_event event);
 void log_frame_info(const uvc_host_frame_info_t *fi, size_t index);
 bool mode_is_safe(const cam_mode_t *m);
+// 用户是否被允许选中该模式 (受 CAM_MAX_SELECT_W/H 限制).
+bool mode_is_selectable(const cam_mode_t *m);
 void add_mode(app_t *a, unsigned w, unsigned h,
               float fps, enum uvc_host_stream_format fmt);
 int  default_mode_index(const app_t *a);
@@ -289,6 +313,9 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
                            unsigned sw, unsigned sh, ppa_srm_color_mode_t in_cm);
 esp_err_t panel_blit(app_t *a);
 void      panel_clear(app_t *a);
+void      panel_dirty_reset(app_t *a);
+void      panel_prepare_dirty_phys(app_t *a, int x, int y, int w, int h);
+void      panel_prepare_dirty_logic(app_t *a, int x, int y, int w, int h);
 size_t    mjpeg_valid_len(const uint8_t *data, size_t len);
 void      yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs);
 
@@ -301,8 +328,8 @@ void uac_device_event_cb(uac_host_device_handle_t uac_device_handle,
                          const uac_host_device_event_t event, void *arg);
 
 // advanced_overlay.cpp
-void draw_advanced_overlay(app_t *a);
-bool advanced_overlay_touch_poll(app_t *a);
+void draw_adv_overlay(app_t *a);
+void adv_overlay_touch_poll(app_t *a);
 
 // uvc_callbacks.cpp
 bool frame_cb(const uvc_host_frame_t *frame, void *user_ctx);
@@ -321,6 +348,7 @@ void      cam_ctrl_init_table(app_t *a);
 void      cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_index);
 void      cam_ctrl_probe_all(app_t *a);
 esp_err_t cam_ctrl_set_int(uvc_host_stream_hdl_t stream_hdl, const cam_ctrl_desc_t *d, int32_t value);
+bool      cam_ctrl_is_live_safe(const cam_ctrl_desc_t *d);
 // open_stream 成功后调用，下发所有 pending_apply 的当前值
 void      cam_ctrl_apply_pending(app_t *a);
 
@@ -337,6 +365,9 @@ void ui_set_status(app_t *a, const char *txt);
 void ui_update_uac_option(app_t *a);
 void ui_update_info_panel(app_t *a);
 void ui_update_advanced_button(app_t *a);
+void ui_build_stream_overlay(app_t *a);
+void ui_refresh_stream_overlay(app_t *a);
+void ui_destroy_stream_overlay(app_t *a);
 
 // stream_setup.cpp
 bool alloc_stream_resources(app_t *a);

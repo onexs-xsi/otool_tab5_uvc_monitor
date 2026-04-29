@@ -206,6 +206,17 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
             uvc_host_frame_t *this_frame = uvc_stream->dynamic.current_frame;
             uvc_stream->dynamic.current_frame = NULL; // Stop writing more data to this frame
             const bool frame_complete = mjpeg_frame_trim(this_frame);
+
+            // Determine if we should invoke the frame callback:
+            // Only invoke the callback if streaming is active, a frame callback exists,
+            // and we have a valid frame to pass to the user.
+            const bool invoke_fb_callback = (uvc_stream->dynamic.streaming && uvc_stream->constant.frame_cb && this_frame && !uvc_stream->single_thread.skip_current_frame && frame_complete);
+            UVC_EXIT_CRITICAL();
+
+            // 注意: ESP_LOGW 会走 vfprintf -> newlib 互斥锁, 在 portENTER_CRITICAL
+            // 临界区里调用会触发 lock_acquire_generic -> abort(). 这里改成在
+            // 退出临界区之后再打印, 同时 this_frame 已被摘出 (current_frame=NULL),
+            // 之后没有其它路径会改写它的字段, 访问安全.
             if (this_frame && !frame_complete) {
                 uint32_t log_count = s_invalid_mjpeg_log_count++;
                 if (log_count < 8) {
@@ -217,12 +228,6 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
                              this_frame->data_len > 0 ? this_frame->data[this_frame->data_len - 1] : 0);
                 }
             }
-
-            // Determine if we should invoke the frame callback:
-            // Only invoke the callback if streaming is active, a frame callback exists,
-            // and we have a valid frame to pass to the user.
-            const bool invoke_fb_callback = (uvc_stream->dynamic.streaming && uvc_stream->constant.frame_cb && this_frame && !uvc_stream->single_thread.skip_current_frame && frame_complete);
-            UVC_EXIT_CRITICAL();
 
             if (invoke_fb_callback) {
                 return_frame = uvc_stream->constant.frame_cb(this_frame, uvc_stream->constant.cb_arg);

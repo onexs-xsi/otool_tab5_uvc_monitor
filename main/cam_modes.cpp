@@ -68,7 +68,15 @@ void log_frame_info(const uvc_host_frame_info_t *fi, size_t index)
 
 bool mode_is_safe(const cam_mode_t *m)
 {
-    // 允许所有分辨率
+    // 历史接口: 仍保留 "是否能开启" 的最终校验入口, 当前不再额外限制.
+    return true;
+}
+
+bool mode_is_selectable(const cam_mode_t *m)
+{
+    if (!m) return false;
+    // 超过 1280x720 的模式仅作为信息展示, 不允许用户选择.
+    if (m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H) return false;
     return true;
 }
 
@@ -89,18 +97,20 @@ void add_mode(app_t *a, unsigned w, unsigned h,
 {
     if (a->mode_count >= CAM_MAX_CANDIDATES) return;
     if (fps <= 0.f) return;
-    // 超出硬件解码/PPA 处理极限的分辨率无法显示，不列入
+    // 超过硬件解码/PPA 极限 (1920x1080) 的分辨率绝对无法处理, 仍然不列入,
+    // 但 1280x720 ~ 1920x1080 之间的模式会进入列表用于展示, 由 ui_selection
+    // 把 >1280x720 的项标灰、屏蔽点击.
     if (w > CAM_MAX_SRC_W || h > CAM_MAX_SRC_H) return;
     if (mode_exists(a, w, h, fps, fmt)) return;
     cam_mode_t *m = &a->modes[a->mode_count++];
     m->w = w; m->h = h; m->fps = fps; m->fmt = fmt;
 }
 
-// 选默认: 使用描述符顺序中的首个模式
+// 选默认: 使用描述符顺序中第一个 "用户可选" 的模式; 找不到则回退到 0.
 int default_mode_index(const app_t *a)
 {
     for (size_t i = 0; i < a->mode_count; i++) {
-        return (int)i;
+        if (mode_is_selectable(&a->modes[i])) return (int)i;
     }
     return 0;
 }

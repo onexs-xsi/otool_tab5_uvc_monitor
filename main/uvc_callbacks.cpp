@@ -7,14 +7,17 @@
 bool frame_cb(const uvc_host_frame_t *frame, void *user_ctx)
 {
     app_t *a = (app_t *)user_ctx;
-    if (xQueueSendToBack(a->frame_queue, &frame, 0) == pdPASS)
-        return false;  // 由应用层归还
-    // 队列满时丢弃旧帧
+    // Display is slower than 720p MJPEG input. Keep only the newest complete
+    // frame so UVC buffers are returned before the driver runs out of empties.
     uvc_host_frame_t *stale = nullptr;
-    if (xQueueReceive(a->frame_queue, &stale, 0) == pdPASS && stale && a->stream_hdl)
-        uvc_host_frame_return(a->stream_hdl, stale);
-    if (xQueueSendToBack(a->frame_queue, &frame, 0) == pdPASS)
-        return false;
+    while (xQueueReceive(a->frame_queue, &stale, 0) == pdPASS) {
+        if (stale && a->stream_hdl) {
+            uvc_host_frame_return(a->stream_hdl, stale);
+        }
+    }
+    if (xQueueSendToBack(a->frame_queue, &frame, 0) == pdPASS) {
+        return false;  // 由应用层归还
+    }
     return true;  // 无法入队, 立即归还
 }
 
@@ -39,9 +42,6 @@ void stream_event_cb(const uvc_host_stream_event_data_t *event, void *user_ctx)
             a->uac_tx_available = false;
             a->uac_selected = false;
         }
-        uvc_host_stream_close(event->device_disconnected.stream_hdl);
-        if (a->stream_hdl == event->device_disconnected.stream_hdl)
-            a->stream_hdl = nullptr;
         xEventGroupSetBits(a->events, EV_DEV_LOST);
     }
 }
@@ -106,6 +106,10 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
             ESP_LOGW(TAG, "    skipped: resolution %ux%u exceeds hw limit %ux%u",
                      fi->h_res, fi->v_res, CAM_MAX_SRC_W, CAM_MAX_SRC_H);
             continue;
+        }
+        if (fi->h_res > CAM_MAX_SELECT_W || fi->v_res > CAM_MAX_SELECT_H) {
+            ESP_LOGI(TAG, "    info-only: %ux%u exceeds selectable cap %ux%u (will be greyed out in UI)",
+                     fi->h_res, fi->v_res, CAM_MAX_SELECT_W, CAM_MAX_SELECT_H);
         }
         // 添加默认帧率（所有格式均列出，不可解码的格式在播放时会提示）
         add_mode(a, fi->h_res, fi->v_res, IV_TO_FPS(fi->default_interval), fi->format);

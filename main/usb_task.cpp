@@ -285,6 +285,16 @@ esp_err_t cam_ctrl_set_int(uvc_host_stream_hdl_t stream_hdl,
     return ESP_OK;
 }
 
+bool cam_ctrl_is_live_safe(const cam_ctrl_desc_t *d)
+{
+    if (!d) return false;
+    /* JPEG quality 会触发 Cam 端重新配置 JPEG 采集路径；streaming 中下发会造成无帧。 */
+    if (d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT && d->selector == UVC_XU_CTRL_JPEG_QUALITY) {
+        return false;
+    }
+    return true;
+}
+
 void cam_ctrl_apply_pending(app_t *a)
 {
     if (!a || !a->stream_hdl) return;

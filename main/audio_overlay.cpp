@@ -193,12 +193,12 @@ static void draw_audio_scope(app_t *a)
     memcpy(levels, a->audio_scope, sizeof(levels));
     portEXIT_CRITICAL(&s_audio_scope_lock);
 
-    esp_cache_msync(a->panel_buf, PANEL_BUF_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-
     const int x = AUDIO_SCOPE_X;
     const int y = AUDIO_SCOPE_Y;
     const int w = AUDIO_SCOPE_W;
     const int h = AUDIO_SCOPE_H;
+    panel_prepare_dirty_logic(a, x, y, w, h);
+
     const int mid = y + h / 2;
     const uint16_t bg = rgb565(0x02, 0x08, 0x12);
     const uint16_t border = rgb565(0x22, 0xD3, 0xEE);
@@ -678,6 +678,8 @@ static void draw_audio_record_panel(app_t *a)
     const int y = AUDIO_REC_BOX_Y;
     const int w = AUDIO_REC_BOX_W;
     const int h = AUDIO_REC_BOX_H;
+    panel_prepare_dirty_logic(a, x, y, w, h);
+
     const uint16_t bg = rgb565(0x02, 0x08, 0x12);
     const uint16_t border = rgb565(0x22, 0xD3, 0xEE);
     const uint16_t grid = rgb565(0x38, 0xB8, 0xDF);

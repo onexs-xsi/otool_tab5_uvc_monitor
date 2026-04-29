@@ -1,6 +1,81 @@
 // 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
 
+static bool panel_clip_rect_phys(int *x, int *y, int *w, int *h)
+{
+    if (!x || !y || !w || !h) return false;
+    if (*x < 0) { *w += *x; *x = 0; }
+    if (*y < 0) { *h += *y; *y = 0; }
+    if (*x + *w > PANEL_PHYS_W) *w = PANEL_PHYS_W - *x;
+    if (*y + *h > PANEL_PHYS_H) *h = PANEL_PHYS_H - *y;
+    return *w > 0 && *h > 0;
+}
+
+static void panel_cache_msync_phys_rect(app_t *a, int x, int y, int w, int h, int dir_flag)
+{
+    if (!a || !a->panel_buf) return;
+    if (!panel_clip_rect_phys(&x, &y, &w, &h)) return;
+
+    const size_t row_bytes = (size_t)PANEL_PHYS_W * 2;
+    const size_t start = (size_t)y * row_bytes + (size_t)x * 2;
+    const size_t end = (size_t)(y + h - 1) * row_bytes + (size_t)(x + w) * 2;
+    if (end <= start) return;
+
+    constexpr uintptr_t cache_line = 64;
+    const uintptr_t buf_begin = (uintptr_t)a->panel_buf;
+    const uintptr_t buf_end = buf_begin + PANEL_BUF_SIZE;
+    const uintptr_t req_begin = buf_begin + start;
+    const uintptr_t req_end = buf_begin + end;
+    uintptr_t sync_begin = req_begin & ~(cache_line - 1);
+    uintptr_t sync_end = (req_end + cache_line - 1) & ~(cache_line - 1);
+    if (sync_begin < buf_begin) sync_begin = buf_begin;
+    if (sync_end > buf_end) sync_end = buf_end;
+    if (sync_end <= sync_begin) return;
+
+    esp_cache_msync((void *)sync_begin, sync_end - sync_begin, dir_flag);
+}
+
+void panel_dirty_reset(app_t *a)
+{
+    if (a) a->panel_dirty_count = 0;
+}
+
+static void panel_mark_dirty_phys(app_t *a, int x, int y, int w, int h)
+{
+    if (!a || !panel_clip_rect_phys(&x, &y, &w, &h)) return;
+
+    if (a->panel_dirty_count < PANEL_DIRTY_RECT_MAX) {
+        a->panel_dirty[a->panel_dirty_count++] = {x, y, w, h};
+        return;
+    }
+
+    int x0 = x;
+    int y0 = y;
+    int x1 = x + w;
+    int y1 = y + h;
+    for (uint8_t i = 0; i < a->panel_dirty_count; i++) {
+        const panel_dirty_rect_t &r = a->panel_dirty[i];
+        if (r.x < x0) x0 = r.x;
+        if (r.y < y0) y0 = r.y;
+        if (r.x + r.w > x1) x1 = r.x + r.w;
+        if (r.y + r.h > y1) y1 = r.y + r.h;
+    }
+    a->panel_dirty[0] = {x0, y0, x1 - x0, y1 - y0};
+    a->panel_dirty_count = 1;
+}
+
+void panel_prepare_dirty_phys(app_t *a, int x, int y, int w, int h)
+{
+    panel_cache_msync_phys_rect(a, x, y, w, h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    panel_mark_dirty_phys(a, x, y, w, h);
+}
+
+void panel_prepare_dirty_logic(app_t *a, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    panel_prepare_dirty_phys(a, y, PANEL_LOGIC_W - x - w, h, w);
+}
+
 // ===================================================================
 // PPA scale+rotate: source (sw x sh) -> panel buf (PANEL_PHYS_W x PANEL_PHYS_H)
 // We rotate 90deg (landscape->portrait) and scale to fit.
@@ -8,6 +83,8 @@
 esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
                                   unsigned sw, unsigned sh, ppa_srm_color_mode_t in_cm)
 {
+    panel_dirty_reset(a);
+
     // 旋转后图像尺寸: out_w = sh, out_h = sw (90 度)
     // 目标屏幕: PANEL_PHYS_W x PANEL_PHYS_H
     // 等比缩放: scale = min(PANEL_PHYS_W / sh, PANEL_PHYS_H / sw)
@@ -24,15 +101,68 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     uint32_t off_x = (PANEL_PHYS_W - out_w) / 2;
     uint32_t off_y = (PANEL_PHYS_H - out_h) / 2;
 
-    // panel_buf 先清零 (黑边)
-    memset(a->panel_buf, 0, PANEL_BUF_SIZE);
+    // 性能: panel_buf 在 SPIRAM 里, 整屏 1.8MB memset 大约 30~60ms.
+    // 输出图像与物理屏对齐时根本没有黑边, 直接跳过清零;
+    // 否则只清四条边的 strip, 避免每帧都把整个 framebuffer 写一遍.
+    if (off_x == 0 && off_y == 0 &&
+        out_w == PANEL_PHYS_W && out_h == PANEL_PHYS_H) {
+        // no border, skip clear
+    } else {
+        const size_t row_bytes = (size_t)PANEL_PHYS_W * 2; // RGB565
+        // top strip
+        if (off_y > 0) {
+            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            memset(a->panel_buf, 0, (size_t)off_y * row_bytes);
+            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
+        // bottom strip
+        uint32_t bottom_y = off_y + out_h;
+        if (bottom_y < PANEL_PHYS_H) {
+            panel_cache_msync_phys_rect(a, 0, bottom_y, PANEL_PHYS_W, PANEL_PHYS_H - bottom_y,
+                                        ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            memset(a->panel_buf + (size_t)bottom_y * row_bytes, 0,
+                   (size_t)(PANEL_PHYS_H - bottom_y) * row_bytes);
+            panel_cache_msync_phys_rect(a, 0, bottom_y, PANEL_PHYS_W, PANEL_PHYS_H - bottom_y,
+                                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
+        // left/right strips inside [off_y, bottom_y)
+        if (off_x > 0 || (off_x + out_w) < PANEL_PHYS_W) {
+            const size_t left_bytes  = (size_t)off_x * 2;
+            const size_t right_start = (size_t)(off_x + out_w) * 2;
+            const size_t right_bytes = (size_t)PANEL_PHYS_W * 2 - right_start;
+            if (left_bytes) {
+                panel_cache_msync_phys_rect(a, 0, off_y, off_x, out_h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            }
+            if (right_bytes) {
+                panel_cache_msync_phys_rect(a, off_x + out_w, off_y, PANEL_PHYS_W - off_x - out_w, out_h,
+                                            ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            }
+            for (uint32_t y = off_y; y < bottom_y; y++) {
+                uint8_t *row = a->panel_buf + (size_t)y * row_bytes;
+                if (left_bytes)  memset(row, 0, left_bytes);
+                if (right_bytes) memset(row + right_start, 0, right_bytes);
+            }
+            if (left_bytes) {
+                panel_cache_msync_phys_rect(a, 0, off_y, off_x, out_h, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            }
+            if (right_bytes) {
+                panel_cache_msync_phys_rect(a, off_x + out_w, off_y, PANEL_PHYS_W - off_x - out_w, out_h,
+                                            ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            }
+        }
+    }
 
     // PPA 操作写到居中区域
     // ppa_srm 要求 out buffer 是完整的 out_pic_w x out_pic_h 区域
     // 我们用整个 panel_buf 作为输出图像 (PANEL_PHYS_W x PANEL_PHYS_H),
-    // 通过 out.block offset 指定起始坐标
-    esp_cache_msync((void *)src_buf, src_size,
-                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    // 通过 out.block offset 指定起始坐标.
+    //
+    // 性能: 这里以前对 src_buf 做 esp_cache_msync(C2M, 1.8MB) 的写回,
+    // 但 src_buf 是 JPEG 引擎通过 DMA 写入 SPIRAM 的, CPU 全程未触碰,
+    // 不存在脏的 CPU 缓存行需要写回; PPA 也直接走 DMA 读 SPIRAM, 不依赖
+    // CPU 缓存, 所以这次 1.8MB 缓存遍历是纯开销, 移除.
+    // YUYV/RGBP 这类 CPU 生成的 RGB565 输入由调用方在转换后做 C2M.
+    (void)src_size;
 
     ppa_srm_oper_config_t cfg = {};
     cfg.in.buffer       = src_buf;
@@ -71,13 +201,21 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
 // ===================================================================
 esp_err_t panel_blit(app_t *a)
 {
-    esp_cache_msync(a->panel_buf, PANEL_BUF_SIZE, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    if (a && a->panel_buf) {
+        for (uint8_t i = 0; i < a->panel_dirty_count; i++) {
+            const panel_dirty_rect_t &r = a->panel_dirty[i];
+            panel_cache_msync_phys_rect(a, r.x, r.y, r.w, r.h, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
+        panel_dirty_reset(a);
+    }
     return esp_lcd_panel_draw_bitmap(a->panel, 0, 0, PANEL_PHYS_W, PANEL_PHYS_H, a->panel_buf);
 }
 
 void panel_clear(app_t *a)
 {
+    panel_dirty_reset(a);
     memset(a->panel_buf, 0, PANEL_BUF_SIZE);
+    panel_mark_dirty_phys(a, 0, 0, PANEL_PHYS_W, PANEL_PHYS_H);
     panel_blit(a);
 }
 size_t mjpeg_valid_len(const uint8_t *data, size_t len)

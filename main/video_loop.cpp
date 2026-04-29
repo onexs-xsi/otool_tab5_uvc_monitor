@@ -8,12 +8,14 @@
 // ===================================================================
 static void render_overlays_and_blit(app_t *a)
 {
-    bool adv_touched = advanced_overlay_touch_poll(a);
-    if (!adv_touched) {
+    if (a->uac_selected) {
         audio_record_touch_poll(a);
+        draw_audio_overlay(a);
     }
-    draw_audio_overlay(a);
-    draw_advanced_overlay(a);
+    if (a->adv_live_enabled) {
+        adv_overlay_touch_poll(a);
+        draw_adv_overlay(a);
+    }
     panel_blit(a);
 }
 
@@ -66,6 +68,12 @@ bool open_stream(app_t *a, int mode_idx)
         a->stream_hdl = nullptr;
         return false;
     }
+
+    // 控制端点在 stream_open 后已可用；先探测并回放 pending，再启动视频流。
+    // 这样 JPEG Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
+    cam_ctrl_probe_all(a);
+    cam_ctrl_apply_pending(a);
+
     err = uvc_host_stream_start(a->stream_hdl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "stream_start failed: %s", esp_err_to_name(err));
@@ -75,15 +83,6 @@ bool open_stream(app_t *a, int mode_idx)
     }
     a->stream_active = true;
     ESP_LOGI(TAG, "Stream started: %s %ux%u @%.1f fps", uvc_format_name(m->fmt), m->w, m->h, m->fps);
-
-    // 流已打开，控制端点可用：探测一次能力，再回放任何 pending 的用户调整。
-    if (!a->adv_caps_probed) {
-        cam_ctrl_probe_all(a);
-    } else {
-        // 复探（即使已知能力），保证设备热插拔后仍然准确；保留 v_cur。
-        cam_ctrl_probe_all(a);
-    }
-    cam_ctrl_apply_pending(a);
     return true;
 }
 
@@ -213,6 +212,8 @@ void video_loop(app_t *a)
             const int64_t convert_start_us = esp_timer_get_time();
             yuyv_to_rgb565(frame->data, (uint16_t *)a->decode_buf,
                            ((size_t)src_w * src_h) / 2);
+            esp_cache_msync(a->decode_buf, required,
+                            ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
             frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
             uvc_host_frame_return(a->stream_hdl, frame);
 
@@ -244,6 +245,8 @@ void video_loop(app_t *a)
             }
             const int64_t convert_start_us = esp_timer_get_time();
             memcpy(a->decode_buf, frame->data, rgb_size);
+            esp_cache_msync(a->decode_buf, rgb_size,
+                            ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
             frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
             uvc_host_frame_return(a->stream_hdl, frame);
             const int64_t ppa_start_us = esp_timer_get_time();
