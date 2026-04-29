@@ -342,6 +342,113 @@ static const uvc_vc_header_desc_t *uvc_desc_get_control_interface_header(const u
     return header_desc_ret;
 }
 
+static inline uint16_t uvc_desc_get_safe_vc_wTotalLength(const usb_config_desc_t *cfg_desc, const uvc_vc_header_desc_t *header)
+{
+    uintptr_t cfg_start = (uintptr_t)cfg_desc;
+    uintptr_t header_start = (uintptr_t)header;
+    if (header_start <= cfg_start) {
+        return 0;
+    }
+    const size_t offset = (size_t)(header_start - cfg_start);
+    if (offset >= cfg_desc->wTotalLength) {
+        return 0;
+    }
+    size_t remaining = cfg_desc->wTotalLength - offset;
+    if (header->wTotalLength > remaining) {
+        return remaining;
+    }
+    return header->wTotalLength;
+}
+
+static void uvc_desc_collect_entity_controls(uvc_host_ctrl_info_t (*ctrl_info_list)[],
+                                             size_t capacity,
+                                             size_t *ctrl_index,
+                                             uint8_t entity_id,
+                                             uint8_t entity_subtype,
+                                             uint8_t control_size,
+                                             const uint8_t *bm_controls,
+                                             uint8_t max_selector)
+{
+    for (uint8_t byte_index = 0; byte_index < control_size; byte_index++) {
+        uint8_t bits = bm_controls[byte_index];
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            if ((bits & (uint8_t)(1U << bit)) == 0) {
+                continue;
+            }
+            const uint8_t selector = (uint8_t)(byte_index * 8U + bit + 1U);
+            if (max_selector != 0 && selector > max_selector) {
+                continue;
+            }
+            if (ctrl_info_list != NULL && *ctrl_index < capacity) {
+                uvc_host_ctrl_info_t *info = &(*ctrl_info_list)[*ctrl_index];
+                memset(info, 0, sizeof(*info));
+                info->entity_id = entity_id;
+                info->entity_subtype = entity_subtype;
+                info->selector = selector;
+                info->control_size = control_size;
+                info->control_byte = byte_index;
+                info->control_bit = bit;
+            }
+            (*ctrl_index)++;
+        }
+    }
+}
+
+esp_err_t uvc_desc_get_ctrl_list(const usb_config_desc_t *config_desc,
+                                 uint8_t uvc_index,
+                                 uvc_host_ctrl_info_t (*ctrl_info_list)[],
+                                 size_t *list_size)
+{
+    UVC_CHECK(config_desc && list_size, ESP_ERR_INVALID_ARG);
+
+    const uvc_vc_header_desc_t *vc_header = uvc_desc_get_control_interface_header(config_desc, uvc_index);
+    UVC_CHECK(vc_header, ESP_ERR_NOT_FOUND);
+    const uint16_t safe_wTotalLength = uvc_desc_get_safe_vc_wTotalLength(config_desc, vc_header);
+    UVC_CHECK(safe_wTotalLength >= vc_header->bLength, ESP_ERR_NOT_FOUND);
+
+    const size_t capacity = ctrl_info_list ? *list_size : 0;
+    size_t ctrl_index = 0;
+    int offset = 0;
+    const usb_standard_desc_t *current_desc = (const usb_standard_desc_t *)vc_header;
+    while ((current_desc = usb_parse_next_descriptor_of_type(current_desc, safe_wTotalLength, UVC_CS_INTERFACE, &offset))) {
+        const uint8_t *p = (const uint8_t *)current_desc;
+        const uint8_t len = p[0];
+        const uint8_t subtype = p[2];
+
+        if (subtype == UVC_VC_DESC_SUBTYPE_PROCESSING_UNIT) {
+            if (len < 8) {
+                continue;
+            }
+            const uint8_t control_size = p[7];
+            if (control_size == 0 || len < (uint8_t)(10U + control_size)) {
+                continue;
+            }
+            uvc_desc_collect_entity_controls(ctrl_info_list, capacity, &ctrl_index,
+                                             p[3], subtype, control_size, &p[8], 0);
+        } else if (subtype == UVC_VC_DESC_SUBTYPE_EXTENSION_UNIT) {
+            if (len < 23) {
+                continue;
+            }
+            const uint8_t num_controls = p[20];
+            const uint8_t num_pins = p[21];
+            const uint8_t control_size_offset = (uint8_t)(22U + num_pins);
+            if (len <= control_size_offset) {
+                continue;
+            }
+            const uint8_t control_size = p[control_size_offset];
+            const uint8_t controls_offset = (uint8_t)(control_size_offset + 1U);
+            if (control_size == 0 || len < (uint8_t)(controls_offset + control_size + 1U)) {
+                continue;
+            }
+            uvc_desc_collect_entity_controls(ctrl_info_list, capacity, &ctrl_index,
+                                             p[3], subtype, control_size, &p[controls_offset], num_controls);
+        }
+    }
+
+    *list_size = ctrl_index;
+    return ESP_OK;
+}
+
 esp_err_t uvc_desc_get_frame_format_by_index(
     const usb_config_desc_t *cfg_desc,
     uint8_t bInterfaceNumber,

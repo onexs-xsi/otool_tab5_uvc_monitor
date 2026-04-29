@@ -1,4 +1,5 @@
 idf_component_register(SRCS "main.cpp"
+                           "advanced_overlay.cpp"
                            "cam_modes.cpp"
                            "display_pipeline.cpp"
                            "audio_overlay.cpp"

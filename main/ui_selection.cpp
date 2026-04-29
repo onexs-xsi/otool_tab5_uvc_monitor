@@ -5,6 +5,12 @@
 static void check_close_cb(lv_event_t *e);
 static void btn_check_cb(lv_event_t *e);
 static void btn_reinit_cb(lv_event_t *e);
+static void btn_advanced_cb(lv_event_t *e);
+static void adv_switch_cb(lv_event_t *e);
+static void adv_option_click_cb(lv_event_t *e);
+static void adv_close_cb(lv_event_t *e);
+static void adv_overlay_bg_cb(lv_event_t *e);
+static void adv_widget_changed_cb(lv_event_t *e);
 
 // ===================================================================
 // LVGL selection UI
@@ -32,6 +38,15 @@ static lv_obj_t *ui_create_info_label(lv_obj_t *parent, const char *text, lv_col
     lv_obj_set_style_text_color(lbl, color, 0);
     if (font) lv_obj_set_style_text_font(lbl, font, 0);
     return lbl;
+}
+
+static bool adv_any_supported(const app_t *a)
+{
+    if (!a || !a->adv_caps_probed) return false;
+    for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+        if (a->adv_caps[i].supported) return true;
+    }
+    return false;
 }
 
 void ui_update_info_panel(app_t *a)
@@ -340,6 +355,8 @@ static void btn_confirm_cb(lv_event_t *e)
     if (a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return;
     a->uac_selected = a->uac_rx_available && a->uac_switch &&
                       lv_obj_has_state(a->uac_switch, LV_STATE_CHECKED);
+    a->adv_live_enabled = adv_any_supported(a) && a->adv_switch &&
+                          lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
     if (!mode_is_safe(&a->modes[a->selected_mode])) {
         ui_set_status(a, "Selected mode needs too much USB memory");
         return;
@@ -398,7 +415,322 @@ static void btn_reinit_cb(lv_event_t *e)
     if (a->status_lbl) lv_label_set_text(a->status_lbl, "REINIT: cycling USB power...");
     if (a->confirm_btn) lv_obj_add_state(a->confirm_btn, LV_STATE_DISABLED);
     if (a->check_btn)   lv_obj_add_state(a->check_btn, LV_STATE_DISABLED);
+    if (a->adv_btn)     lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
+    if (a->adv_switch)  lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
     app_request_usb_reinit(a);
+}
+
+// ===================================================================
+// ADVANCED 控制面板
+// ===================================================================
+static lv_color_t kColPanelBorder = LV_COLOR_MAKE(0xE2, 0xE8, 0xF0);
+static lv_color_t kColTitle       = LV_COLOR_MAKE(0x0F, 0x17, 0x2A);
+static lv_color_t kColMuted       = LV_COLOR_MAKE(0x64, 0x74, 0x8B);
+static lv_color_t kColAccent      = LV_COLOR_MAKE(0x25, 0x63, 0xEB);
+
+static const char *adv_widget_kind(const cam_ctrl_desc_t *d, int *steps)
+{
+    int span = d->v_max - d->v_min;
+    if (span <= 0) { *steps = 1; return "static"; }
+    *steps = span + 1;
+    if (d->v_min == 0 && d->v_max == 1) return "switch";
+    if (span >= 2 && span <= 6 && d->value_size == 4 &&
+        d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT &&
+        (d->selector == UVC_XU_CTRL_SPECIAL_EFFECT || d->selector == UVC_XU_CTRL_WB_MODE)) {
+        return "dropdown";
+    }
+    return "slider";
+}
+
+// 用户在面板里调整控件后回调：更新 v_cur，必要时下发或标记 pending。
+static void adv_widget_changed_cb(lv_event_t *e)
+{
+    app_t *a = &s_app;
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= (int)CAM_ADV_CTRL_COUNT) return;
+    cam_ctrl_desc_t *d = &a->adv_caps[idx];
+    if (!d->supported) return;
+    lv_obj_t *w = (lv_obj_t *)lv_event_get_target(e);
+
+    int32_t new_val = d->v_cur;
+    int steps = 0;
+    const char *kind = adv_widget_kind(d, &steps);
+    if (strcmp(kind, "switch") == 0) {
+        new_val = lv_obj_has_state(w, LV_STATE_CHECKED) ? d->v_max : d->v_min;
+    } else if (strcmp(kind, "dropdown") == 0) {
+        uint16_t sel = lv_dropdown_get_selected(w);
+        new_val = d->v_min + (int32_t)sel;
+    } else {
+        // slider 取 0..span，再映射到 [v_min, v_max]
+        int32_t s = (int32_t)lv_slider_get_value(w);
+        new_val = d->v_min + s;
+    }
+    if (new_val < d->v_min) new_val = d->v_min;
+    if (new_val > d->v_max) new_val = d->v_max;
+    d->v_cur = new_val;
+
+    // 立即下发；若流未打开则标记 pending，下次 open_stream 后回放。
+    esp_err_t err = ESP_FAIL;
+    if (a->stream_hdl) {
+        err = cam_ctrl_set_int(a->stream_hdl, d, d->v_cur);
+    }
+    if (err != ESP_OK) {
+        d->pending_apply = true;
+    } else {
+        d->pending_apply = false;
+    }
+
+    if (a->adv_status_lbl) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s = %ld%s", d->name, (long)d->v_cur,
+                 (err == ESP_OK) ? "" : " (pending)");
+        lv_label_set_text(a->adv_status_lbl, buf);
+    }
+}
+
+static void adv_switch_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_CLICKED) return;
+    if (!a || !a->adv_switch) return;
+    if (!adv_any_supported(a)) {
+        a->adv_live_enabled = false;
+        lv_obj_clear_state(a->adv_switch, LV_STATE_CHECKED);
+        if (a->status_lbl) lv_label_set_text(a->status_lbl, "Camera descriptors report no advanced controls");
+        ui_update_advanced_button(a);
+        return;
+    }
+    a->adv_live_enabled = lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
+    if (a->status_lbl) {
+        lv_label_set_text(a->status_lbl,
+                          a->adv_live_enabled ?
+                          "Advanced sidebar will stay visible in video" :
+                          "Advanced sidebar disabled; use Configuration before START");
+    }
+    ui_update_advanced_button(a);
+}
+
+static void adv_option_click_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a || !a->adv_switch) return;
+    if (!adv_any_supported(a)) return;
+    if (lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED)) {
+        lv_obj_clear_state(a->adv_switch, LV_STATE_CHECKED);
+    } else {
+        lv_obj_add_state(a->adv_switch, LV_STATE_CHECKED);
+    }
+    a->adv_live_enabled = lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
+    ui_update_advanced_button(a);
+}
+
+static void adv_overlay_bg_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    if (lv_event_get_target(e) != a->adv_overlay) return; // 只响应背景点击
+    if (a->adv_overlay) {
+        lv_obj_delete(a->adv_overlay);
+        a->adv_overlay = nullptr;
+        a->adv_panel = nullptr;
+        a->adv_status_lbl = nullptr;
+    }
+}
+
+static void adv_close_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    if (a->adv_overlay) {
+        lv_obj_delete(a->adv_overlay);
+        a->adv_overlay = nullptr;
+        a->adv_panel = nullptr;
+        a->adv_status_lbl = nullptr;
+    }
+}
+
+static void adv_build_row(app_t *a, lv_obj_t *parent, int idx)
+{
+    cam_ctrl_desc_t *d = &a->adv_caps[idx];
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_width(row, lv_pct(100));
+    lv_obj_set_style_bg_color(row, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 1, 0);
+    lv_obj_set_style_border_color(row, kColPanelBorder, 0);
+    lv_obj_set_style_radius(row, 8, 0);
+    lv_obj_set_style_pad_all(row, 7, 0);
+    lv_obj_set_style_pad_row(row, 3, 0);
+    lv_obj_set_layout(row, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    char hdr[96];
+    snprintf(hdr, sizeof(hdr), "%s  [%ld..%ld]  cur=%ld",
+             d->name, (long)d->v_min, (long)d->v_max, (long)d->v_cur);
+    lv_obj_t *title = lv_label_create(row);
+    lv_label_set_text(title, hdr);
+    lv_obj_set_style_text_color(title, kColTitle, 0);
+
+    int steps = 0;
+    const char *kind = adv_widget_kind(d, &steps);
+
+    if (strcmp(kind, "switch") == 0) {
+        lv_obj_t *sw = lv_switch_create(row);
+        lv_obj_set_size(sw, 58, 28);
+        if (d->v_cur >= d->v_max) lv_obj_add_state(sw, LV_STATE_CHECKED);
+        lv_obj_add_event_cb(sw, adv_widget_changed_cb, LV_EVENT_VALUE_CHANGED,
+                            (void *)(intptr_t)idx);
+        lv_obj_set_height(row, 58);
+    } else if (strcmp(kind, "dropdown") == 0) {
+        lv_obj_t *dd = lv_dropdown_create(row);
+        char opts[160] = {0};
+        size_t off = 0;
+        for (int v = d->v_min; v <= d->v_max && off < sizeof(opts) - 8; v++) {
+            int n = snprintf(opts + off, sizeof(opts) - off,
+                             (v == d->v_min) ? "%d" : "\n%d", v);
+            if (n <= 0) break;
+            off += (size_t)n;
+        }
+        lv_dropdown_set_options(dd, opts);
+        int sel = (int)(d->v_cur - d->v_min);
+        if (sel < 0) sel = 0;
+        lv_dropdown_set_selected(dd, (uint16_t)sel);
+        lv_obj_set_width(dd, lv_pct(100));
+        lv_obj_add_event_cb(dd, adv_widget_changed_cb, LV_EVENT_VALUE_CHANGED,
+                            (void *)(intptr_t)idx);
+        lv_obj_set_height(row, 70);
+    } else {
+        // slider: range 0..(span)
+        lv_obj_t *sl = lv_slider_create(row);
+        lv_obj_set_width(sl, lv_pct(100));
+        int32_t span = d->v_max - d->v_min;
+        if (span < 1) span = 1;
+        lv_slider_set_range(sl, 0, span);
+        int32_t pos = d->v_cur - d->v_min;
+        if (pos < 0) pos = 0;
+        if (pos > span) pos = span;
+        lv_slider_set_value(sl, pos, LV_ANIM_OFF);
+        lv_obj_add_event_cb(sl, adv_widget_changed_cb, LV_EVENT_VALUE_CHANGED,
+                            (void *)(intptr_t)idx);
+        lv_obj_set_height(row, 60);
+    }
+}
+
+static void btn_advanced_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    if (a->check_running) return;
+    if (!a->adv_caps_probed) {
+        if (a->status_lbl) lv_label_set_text(a->status_lbl,
+            "No UVC advanced descriptor parsed yet");
+        return;
+    }
+    int support_cnt = 0;
+    for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+        if (a->adv_caps[i].supported) support_cnt++;
+    }
+    if (support_cnt == 0) {
+        if (a->status_lbl) lv_label_set_text(a->status_lbl,
+            "Camera descriptors report no advanced controls");
+        return;
+    }
+
+    // 已存在则刷新
+    if (a->adv_overlay) {
+        lv_obj_delete(a->adv_overlay);
+        a->adv_overlay = nullptr;
+        a->adv_panel = nullptr;
+        a->adv_status_lbl = nullptr;
+    }
+
+    lv_obj_t *scr = lv_scr_act();
+    a->adv_overlay = lv_obj_create(scr);
+    lv_obj_set_size(a->adv_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_align(a->adv_overlay, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(a->adv_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(a->adv_overlay, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(a->adv_overlay, 0, 0);
+    lv_obj_set_style_radius(a->adv_overlay, 0, 0);
+    lv_obj_set_style_pad_all(a->adv_overlay, 0, 0);
+    lv_obj_clear_flag(a->adv_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(a->adv_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(a->adv_overlay, adv_overlay_bg_cb, LV_EVENT_CLICKED, a);
+
+    a->adv_panel = lv_obj_create(a->adv_overlay);
+    lv_obj_set_size(a->adv_panel, 380, PANEL_LOGIC_H - 28);
+    lv_obj_align(a->adv_panel, LV_ALIGN_RIGHT_MID, -14, 0);
+    ui_set_panel_style(a->adv_panel, lv_color_white(), 16);
+    lv_obj_set_style_pad_all(a->adv_panel, 12, 0);
+    lv_obj_set_style_pad_row(a->adv_panel, 6, 0);
+    lv_obj_set_layout(a->adv_panel, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(a->adv_panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(a->adv_panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scrollbar_mode(a->adv_panel, LV_SCROLLBAR_MODE_AUTO);
+
+    lv_obj_t *title = lv_label_create(a->adv_panel);
+    lv_label_set_text(title, "Camera advanced");
+    lv_obj_set_style_text_color(title, kColTitle, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_height(title, 30);
+
+    a->adv_status_lbl = lv_label_create(a->adv_panel);
+    lv_label_set_long_mode(a->adv_status_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(a->adv_status_lbl, lv_pct(100));
+    lv_obj_set_style_text_color(a->adv_status_lbl, kColMuted, 0);
+    lv_obj_set_height(a->adv_status_lbl, 24);
+    if (a->stream_hdl) {
+        lv_label_set_text(a->adv_status_lbl, "Adjust to send live");
+    } else {
+        lv_label_set_text(a->adv_status_lbl, "Stream is closed: changes apply on next START");
+    }
+
+    for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+        if (a->adv_caps[i].supported) adv_build_row(a, a->adv_panel, i);
+    }
+
+    lv_obj_t *close_btn = lv_button_create(a->adv_panel);
+    lv_obj_set_size(close_btn, lv_pct(100), 38);
+    lv_obj_set_style_radius(close_btn, 10, 0);
+    lv_obj_set_style_bg_color(close_btn, kColAccent, 0);
+    lv_obj_add_event_cb(close_btn, adv_close_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *cl = lv_label_create(close_btn);
+    lv_label_set_text(cl, "CLOSE");
+    lv_obj_set_style_text_color(cl, lv_color_white(), 0);
+    lv_obj_center(cl);
+
+    lv_obj_move_foreground(a->adv_overlay);
+}
+
+void ui_update_advanced_button(app_t *a)
+{
+    if (!a) return;
+    bool any = adv_any_supported(a);
+    if (!any) {
+        a->adv_live_enabled = false;
+        if (a->adv_switch) lv_obj_clear_state(a->adv_switch, LV_STATE_CHECKED);
+    }
+    if (a->adv_switch) {
+        if (any) lv_obj_clear_state(a->adv_switch, LV_STATE_DISABLED);
+        else     lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
+        if (a->adv_live_enabled) lv_obj_add_state(a->adv_switch, LV_STATE_CHECKED);
+        else                     lv_obj_clear_state(a->adv_switch, LV_STATE_CHECKED);
+    }
+    if (a->adv_btn) {
+        if (any) lv_obj_clear_state(a->adv_btn, LV_STATE_DISABLED);
+        else     lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
+    }
+    if (a->adv_lbl) {
+        if (!any) {
+            lv_label_set_text(a->adv_lbl, "Advanced: unavailable");
+        } else if (a->adv_live_enabled) {
+            lv_label_set_text(a->adv_lbl, "Advanced: show in video");
+        } else {
+            lv_label_set_text(a->adv_lbl, "Advanced: configure before START");
+        }
+    }
 }
 
 void ui_style_mode_item(lv_obj_t *item, bool selected)
@@ -557,13 +889,13 @@ void ui_build_selection(app_t *a)
     lv_obj_t *info_title = ui_create_info_label(right_panel, "UVC Info", lv_color_make(0x0F, 0x17, 0x2A), &lv_font_montserrat_24);
     lv_obj_set_height(info_title, 34);
     a->info_mode_lbl = ui_create_info_label(right_panel, "Selected\nNo mode", lv_color_make(0x1E, 0x29, 0x3B), nullptr);
-    lv_obj_set_height(a->info_mode_lbl, 76);
+    lv_obj_set_height(a->info_mode_lbl, 68);
     a->info_device_lbl = ui_create_info_label(right_panel, "Device\nwaiting", lv_color_make(0x47, 0x55, 0x69), nullptr);
-    lv_obj_set_height(a->info_device_lbl, 70);
+    lv_obj_set_height(a->info_device_lbl, 56);
     a->info_formats_lbl = ui_create_info_label(right_panel, "Formats\nwaiting", lv_color_make(0x47, 0x55, 0x69), nullptr);
-    lv_obj_set_height(a->info_formats_lbl, 70);
+    lv_obj_set_height(a->info_formats_lbl, 56);
     a->info_audio_lbl = ui_create_info_label(right_panel, "Audio\nno UAC", lv_color_make(0x47, 0x55, 0x69), nullptr);
-    lv_obj_set_height(a->info_audio_lbl, 64);
+    lv_obj_set_height(a->info_audio_lbl, 50);
 
     lv_obj_t *uac_row = lv_obj_create(right_panel);
     lv_obj_set_width(uac_row, lv_pct(100));
@@ -591,6 +923,58 @@ void ui_build_selection(app_t *a)
     lv_obj_clear_flag(a->uac_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(a->uac_switch, uac_switch_cb, LV_EVENT_VALUE_CHANGED, a);
     lv_obj_add_event_cb(a->uac_switch, uac_switch_cb, LV_EVENT_CLICKED, a);
+
+    // ADVANCED：开关决定视频阶段是否常驻显示右侧参数侧栏；Configuration 用于进入前调整。
+    a->adv_container = lv_obj_create(right_panel);
+    lv_obj_set_width(a->adv_container, lv_pct(100));
+    lv_obj_set_height(a->adv_container, 126);
+    lv_obj_set_style_bg_color(a->adv_container, lv_color_make(0xF8, 0xFA, 0xFC), 0);
+    lv_obj_set_style_bg_opa(a->adv_container, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(a->adv_container, 1, 0);
+    lv_obj_set_style_border_color(a->adv_container, lv_color_make(0xE2, 0xE8, 0xF0), 0);
+    lv_obj_set_style_pad_all(a->adv_container, 10, 0);
+    lv_obj_set_style_radius(a->adv_container, 14, 0);
+    lv_obj_clear_flag(a->adv_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *adv_toggle_row = lv_obj_create(a->adv_container);
+    lv_obj_set_width(adv_toggle_row, lv_pct(100));
+    lv_obj_set_height(adv_toggle_row, 48);
+    lv_obj_set_style_bg_opa(adv_toggle_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(adv_toggle_row, 0, 0);
+    lv_obj_set_style_pad_all(adv_toggle_row, 0, 0);
+    lv_obj_clear_flag(adv_toggle_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(adv_toggle_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(adv_toggle_row, adv_option_click_cb, LV_EVENT_CLICKED, a);
+
+    a->adv_lbl = lv_label_create(adv_toggle_row);
+    lv_obj_set_width(a->adv_lbl, right_w - 128);
+    lv_label_set_long_mode(a->adv_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(a->adv_lbl, lv_color_make(0x37, 0x41, 0x51), 0);
+    lv_obj_align(a->adv_lbl, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_label_set_text(a->adv_lbl, "Advanced: unavailable");
+
+    a->adv_switch = lv_switch_create(adv_toggle_row);
+    lv_obj_set_size(a->adv_switch, 78, 36);
+    lv_obj_align(a->adv_switch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_clear_flag(a->adv_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(a->adv_switch, adv_switch_cb, LV_EVENT_VALUE_CHANGED, a);
+    lv_obj_add_event_cb(a->adv_switch, adv_switch_cb, LV_EVENT_CLICKED, a);
+
+    a->adv_btn = lv_button_create(a->adv_container);
+    lv_obj_set_width(a->adv_btn, lv_pct(100));
+    lv_obj_set_height(a->adv_btn, 44);
+    lv_obj_align(a->adv_btn, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_radius(a->adv_btn, 12, 0);
+    lv_obj_set_style_bg_color(a->adv_btn, lv_color_make(0x0E, 0x76, 0x90), 0);
+    lv_obj_set_style_bg_color(a->adv_btn, lv_color_make(0xCB, 0xD5, 0xE1), LV_STATE_DISABLED);
+    lv_obj_set_style_shadow_width(a->adv_btn, 0, 0);
+    lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(a->adv_btn, btn_advanced_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *adv_cfg_lbl = lv_label_create(a->adv_btn);
+    lv_label_set_text(adv_cfg_lbl, "CONFIGURATION");
+    lv_obj_set_style_text_color(adv_cfg_lbl, lv_color_white(), 0);
+    lv_obj_center(adv_cfg_lbl);
 
     lv_obj_t *ftr = lv_obj_create(a->sel_screen);
     lv_obj_set_size(ftr, content_w, bottom_h);
@@ -654,6 +1038,7 @@ void ui_build_selection(app_t *a)
 
     ui_update_uac_option(a);
     ui_update_info_panel(a);
+    ui_update_advanced_button(a);
 
     otool_lvgl_port_unlock();
 }

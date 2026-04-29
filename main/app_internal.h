@@ -58,6 +58,7 @@
 #define CAM_NO_FRAME_DIAG_TIMEOUTS 3
 #define CAM_CHECK_ATTEMPTS  5
 #define CAM_CHECK_FRAME_TIMEOUT_MS 1500
+#define CAM_FPS_REPORT_INTERVAL_MS 10000
 
 #define AUDIO_SCOPE_W       360
 #define AUDIO_SCOPE_H       96
@@ -79,6 +80,35 @@
 #define USB_LIB_TASK_PRIO   15
 #define UVC_DECODE_TASK_PRIO 10
 #define UAC_AUDIO_TASK_PRIO 9
+
+// ---------------------------------------------------------------------------
+// UVC VideoControl 实体/选择器（与 Cam 端 usb_descriptors.h 保持一致）
+// ---------------------------------------------------------------------------
+#define UVC_ENTITY_ID_PROCESSING_UNIT  3
+#define UVC_ENTITY_ID_EXTENSION_UNIT   4
+
+#define UVC_PU_CTRL_CONTRAST           0x03  // int16_t, 2 字节
+#define UVC_PU_CTRL_SATURATION         0x07  // int16_t, 2 字节
+
+#define UVC_XU_CTRL_HMIRROR            1     // int32_t, 4 字节, [0,1]
+#define UVC_XU_CTRL_VFLIP              2     // int32_t, 4 字节, [0,1]
+#define UVC_XU_CTRL_SPECIAL_EFFECT     3     // int32_t, 4 字节, [0,6]
+#define UVC_XU_CTRL_AE_LEVEL           4     // int32_t, 4 字节, [-5,5]
+#define UVC_XU_CTRL_JPEG_QUALITY       5     // int32_t, 4 字节, [1,63]
+#define UVC_XU_CTRL_WB_MODE            6     // int32_t, 4 字节, [0,4]
+
+// 标准 UVC class-specific request codes
+#define UVC_REQ_SET_CUR     0x01
+#define UVC_REQ_GET_CUR     0x81
+#define UVC_REQ_GET_MIN     0x82
+#define UVC_REQ_GET_MAX     0x83
+#define UVC_REQ_GET_RES     0x84
+#define UVC_REQ_GET_LEN     0x85
+#define UVC_REQ_GET_INFO    0x86
+#define UVC_REQ_GET_DEF     0x87
+
+// adv_caps 数组中可枚举的控件总数
+#define CAM_ADV_CTRL_COUNT  8
 
 // 事件位
 #define EV_DEV_CONNECTED    (1 << 0)
@@ -112,6 +142,20 @@ typedef enum {
     AUDIO_REC_READY,
     AUDIO_REC_PLAYING,
 } audio_rec_state_t;
+
+// 单个 UVC 实体控件能力描述（从 Cam 端 GET_INFO/GET_MIN/MAX/DEF 收集）
+typedef struct {
+    uint8_t  entity_id;     // PU=3, XU=4
+    uint8_t  selector;      // 控件选择器
+    uint8_t  value_size;    // 线缆字节数：2(int16) 或 4(int32)
+    bool     supported;     // 探测成功且 GET/SET 标志位都置位
+    int32_t  v_min;
+    int32_t  v_max;
+    int32_t  v_def;
+    int32_t  v_cur;         // 当前 UI 值；可能在 stream_hdl 为空时仍被用户调整
+    bool     pending_apply; // 下次 open_stream 后需要重新下发
+    const char *name;       // 仅供日志和 UI 标题使用（指向常量字符串）
+} cam_ctrl_desc_t;
 
 typedef struct {
     // 状态
@@ -200,6 +244,21 @@ typedef struct {
     volatile bool           check_running;
     TaskHandle_t            check_task;
 
+    // ADVANCED 控制面板（选择屏用 LVGL，视频屏用 direct overlay）
+    lv_obj_t               *adv_container;    // 选择屏 Advanced 容器
+    lv_obj_t               *adv_switch;       // 是否在视频界面常驻显示配置侧栏
+    lv_obj_t               *adv_lbl;          // Advanced 开关说明
+    lv_obj_t               *adv_btn;          // Configuration 按钮
+    lv_obj_t               *adv_overlay;      // 浮层背景
+    lv_obj_t               *adv_panel;        // 浮层主容器
+    lv_obj_t               *adv_status_lbl;   // 状态/提示文本
+    bool                    adv_live_enabled; // START 后是否显示右侧高级配置侧栏
+    bool                    adv_touch_down;   // 视频侧栏触摸消抖
+
+    // 摄像头能力
+    cam_ctrl_desc_t         adv_caps[CAM_ADV_CTRL_COUNT];
+    bool                    adv_caps_probed; // 至少完成过一次探测
+
     // FPS 统计
     uint32_t                decoded_frames;
     uint32_t                fps_report_ms;
@@ -241,6 +300,10 @@ void stop_uac_stream(app_t *a);
 void uac_device_event_cb(uac_host_device_handle_t uac_device_handle,
                          const uac_host_device_event_t event, void *arg);
 
+// advanced_overlay.cpp
+void draw_advanced_overlay(app_t *a);
+bool advanced_overlay_touch_poll(app_t *a);
+
 // uvc_callbacks.cpp
 bool frame_cb(const uvc_host_frame_t *frame, void *user_ctx);
 void stream_event_cb(const uvc_host_stream_event_data_t *event, void *user_ctx);
@@ -250,6 +313,16 @@ void uac_driver_event_cb(uint8_t addr, uint8_t iface_num,
 
 // usb_task.cpp
 void usb_lib_task(void *arg);
+
+// usb_task.cpp - UVC VideoControl 控件能力探测与下发
+// stream_hdl 必须有效（流已打开）；返回 ESP_OK 表示传输成功，其他错误统一视为不支持该控件。
+esp_err_t cam_ctrl_probe_one(uvc_host_stream_hdl_t stream_hdl, cam_ctrl_desc_t *d);
+void      cam_ctrl_init_table(app_t *a);
+void      cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_index);
+void      cam_ctrl_probe_all(app_t *a);
+esp_err_t cam_ctrl_set_int(uvc_host_stream_hdl_t stream_hdl, const cam_ctrl_desc_t *d, int32_t value);
+// open_stream 成功后调用，下发所有 pending_apply 的当前值
+void      cam_ctrl_apply_pending(app_t *a);
 
 // main.cpp - 由 UI 触发的 USB 摄像头电源循环（VBUS 关 -> 延时 -> 开），
 // 用于卡死或主控复位后的快速恢复；非阻塞，会创建一个一次性辅助任务。
@@ -263,6 +336,7 @@ void ui_clear_mode_list(app_t *a);
 void ui_set_status(app_t *a, const char *txt);
 void ui_update_uac_option(app_t *a);
 void ui_update_info_panel(app_t *a);
+void ui_update_advanced_button(app_t *a);
 
 // stream_setup.cpp
 bool alloc_stream_resources(app_t *a);

@@ -79,6 +79,10 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
     a->stream_idx  = sidx;
     a->mode_count  = 0;
 
+    // 先从 VC 描述符解析 PU/XU bmControls，选择界面即可启用 ADVANCED；
+    // START/CHECK 打开流后再通过 GET_* 控制请求确认精确范围。
+    cam_ctrl_probe_descriptors(a, addr, sidx);
+
     unsigned mjpeg_entries = 0;
     unsigned yuy2_entries = 0;
     unsigned rgbp_entries = 0;

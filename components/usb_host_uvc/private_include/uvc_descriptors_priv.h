@@ -122,6 +122,12 @@ esp_err_t uvc_desc_get_frame_list(
     uvc_host_frame_info_t (*frame_info_list)[],
     size_t *list_size);
 
+esp_err_t uvc_desc_get_ctrl_list(
+    const usb_config_desc_t *config_desc,
+    uint8_t uvc_index,
+    uvc_host_ctrl_info_t (*ctrl_info_list)[],
+    size_t *list_size);
+
 #ifdef __cplusplus
 }
 #endif

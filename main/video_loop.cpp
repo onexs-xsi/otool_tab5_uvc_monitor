@@ -1,9 +1,22 @@
 // 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
 
+#include "esp_timer.h"
+
 // ===================================================================
 // Main decode/display loop (called after LVGL is stopped)
 // ===================================================================
+static void render_overlays_and_blit(app_t *a)
+{
+    bool adv_touched = advanced_overlay_touch_poll(a);
+    if (!adv_touched) {
+        audio_record_touch_poll(a);
+    }
+    draw_audio_overlay(a);
+    draw_advanced_overlay(a);
+    panel_blit(a);
+}
+
 void drain_queue(app_t *a)
 {
     uvc_host_frame_t *f = nullptr;
@@ -62,6 +75,15 @@ bool open_stream(app_t *a, int mode_idx)
     }
     a->stream_active = true;
     ESP_LOGI(TAG, "Stream started: %s %ux%u @%.1f fps", uvc_format_name(m->fmt), m->w, m->h, m->fps);
+
+    // 流已打开，控制端点可用：探测一次能力，再回放任何 pending 的用户调整。
+    if (!a->adv_caps_probed) {
+        cam_ctrl_probe_all(a);
+    } else {
+        // 复探（即使已知能力），保证设备热插拔后仍然准确；保留 v_cur。
+        cam_ctrl_probe_all(a);
+    }
+    cam_ctrl_apply_pending(a);
     return true;
 }
 
@@ -79,9 +101,17 @@ void video_loop(app_t *a)
     a->fps_report_ms  = (uint32_t)esp_log_timestamp();
     uint32_t timeout_count = 0;
     uint32_t empty_frame_count = 0;
+    uint64_t stat_wait_us = 0;
+    uint64_t stat_decode_us = 0;
+    uint64_t stat_convert_us = 0;
+    uint64_t stat_ppa_us = 0;
+    uint64_t stat_blit_us = 0;
+    uint64_t stat_total_us = 0;
 
     while (a->stream_active) {
         uvc_host_frame_t *frame = nullptr;
+        const int64_t frame_loop_start_us = esp_timer_get_time();
+        const int64_t wait_start_us = frame_loop_start_us;
         if (xQueueReceive(a->frame_queue, &frame, pdMS_TO_TICKS(CAM_FRAME_TIMEOUT_MS)) != pdPASS) {
             timeout_count++;
             ESP_LOGW(TAG, "frame timeout #%u: no UVC frame received for %u ms stream_active=%d mode=%s %ux%u @%.1f",
@@ -93,6 +123,7 @@ void video_loop(app_t *a)
             }
             continue;
         }
+        const int64_t got_frame_us = esp_timer_get_time();
         if (!frame || frame->data_len == 0) {
             empty_frame_count++;
             ESP_LOGW(TAG, "empty UVC frame #%u: frame=%p data_len=%u buffer_len=%u",
@@ -103,12 +134,19 @@ void video_loop(app_t *a)
         }
         timeout_count = 0;
 
+        bool rendered = false;
+        uint64_t frame_decode_us = 0;
+        uint64_t frame_convert_us = 0;
+        uint64_t frame_ppa_us = 0;
+        uint64_t frame_blit_us = 0;
+
         if (frame->vs_format.format == UVC_VS_FORMAT_MJPEG) {
             if (!a->jpeg_dec || !a->decode_buf) {
                 ESP_LOGW(TAG, "JPEG resources are not ready");
                 uvc_host_frame_return(a->stream_hdl, frame);
                 continue;
             }
+            const int64_t decode_start_us = esp_timer_get_time();
             size_t jpeg_len = mjpeg_valid_len(frame->data, frame->data_len);
             if (jpeg_len == 0) {
                 ESP_LOGW(TAG, "Drop invalid MJPEG frame: len=%u first=%02x%02x last=%02x%02x",
@@ -137,6 +175,7 @@ void video_loop(app_t *a)
                                                  frame->data, (uint32_t)jpeg_len,
                                                  a->decode_buf, (uint32_t)a->decode_buf_size,
                                                  &out_size);
+            frame_decode_us = (uint64_t)(esp_timer_get_time() - decode_start_us);
             uvc_host_frame_return(a->stream_hdl, frame);
 
             if (err != ESP_OK) {
@@ -145,11 +184,15 @@ void video_loop(app_t *a)
             }
 
             size_t rgb_size = out_size ? out_size : ((size_t)pic_info.width * pic_info.height * 2);
-            if (ppa_scale_rotate(a, a->decode_buf, rgb_size, pic_info.width, pic_info.height,
-                                 PPA_SRM_COLOR_MODE_RGB565) == ESP_OK) {
-                audio_record_touch_poll(a);
-                draw_audio_overlay(a);
-                panel_blit(a);
+            const int64_t ppa_start_us = esp_timer_get_time();
+            esp_err_t ppa_err = ppa_scale_rotate(a, a->decode_buf, rgb_size, pic_info.width, pic_info.height,
+                                                 PPA_SRM_COLOR_MODE_RGB565);
+            frame_ppa_us = (uint64_t)(esp_timer_get_time() - ppa_start_us);
+            if (ppa_err == ESP_OK) {
+                const int64_t blit_start_us = esp_timer_get_time();
+                render_overlays_and_blit(a);
+                frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
+                rendered = true;
             }
         } else if (frame->vs_format.format == UVC_VS_FORMAT_YUY2) {
             size_t required = (size_t)src_w * src_h * 2;
@@ -167,16 +210,22 @@ void video_loop(app_t *a)
             }
 
             // 软件 YUYV -> RGB565（PPA SRM 在本芯片版本不支持 YUYV 源）
+            const int64_t convert_start_us = esp_timer_get_time();
             yuyv_to_rgb565(frame->data, (uint16_t *)a->decode_buf,
                            ((size_t)src_w * src_h) / 2);
+            frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
             uvc_host_frame_return(a->stream_hdl, frame);
 
             size_t rgb_size = (size_t)src_w * src_h * 2;
-            if (ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
-                                 PPA_SRM_COLOR_MODE_RGB565) == ESP_OK) {
-                audio_record_touch_poll(a);
-                draw_audio_overlay(a);
-                panel_blit(a);
+            const int64_t ppa_start_us = esp_timer_get_time();
+            esp_err_t ppa_err = ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
+                                                 PPA_SRM_COLOR_MODE_RGB565);
+            frame_ppa_us = (uint64_t)(esp_timer_get_time() - ppa_start_us);
+            if (ppa_err == ESP_OK) {
+                const int64_t blit_start_us = esp_timer_get_time();
+                render_overlays_and_blit(a);
+                frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
+                rendered = true;
             }
         } else if (frame->vs_format.format == UVC_VS_FORMAT_RGBP) {
             // RGB565 LE (RGBP) — no color conversion needed, copy to aligned buf then PPA
@@ -193,13 +242,19 @@ void video_loop(app_t *a)
                 uvc_host_frame_return(a->stream_hdl, frame);
                 continue;
             }
+            const int64_t convert_start_us = esp_timer_get_time();
             memcpy(a->decode_buf, frame->data, rgb_size);
+            frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
             uvc_host_frame_return(a->stream_hdl, frame);
-            if (ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
-                                 PPA_SRM_COLOR_MODE_RGB565) == ESP_OK) {
-                audio_record_touch_poll(a);
-                draw_audio_overlay(a);
-                panel_blit(a);
+            const int64_t ppa_start_us = esp_timer_get_time();
+            esp_err_t ppa_err = ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
+                                                 PPA_SRM_COLOR_MODE_RGB565);
+            frame_ppa_us = (uint64_t)(esp_timer_get_time() - ppa_start_us);
+            if (ppa_err == ESP_OK) {
+                const int64_t blit_start_us = esp_timer_get_time();
+                render_overlays_and_blit(a);
+                frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
+                rendered = true;
             }
         } else {
             ESP_LOGW(TAG, "Unsupported frame format: %s", uvc_format_name(frame->vs_format.format));
@@ -207,13 +262,44 @@ void video_loop(app_t *a)
             continue;
         }
 
+        if (!rendered) {
+            continue;
+        }
+
         a->decoded_frames++;
+        stat_wait_us += (uint64_t)(got_frame_us - wait_start_us);
+        stat_decode_us += frame_decode_us;
+        stat_convert_us += frame_convert_us;
+        stat_ppa_us += frame_ppa_us;
+        stat_blit_us += frame_blit_us;
+        stat_total_us += (uint64_t)(esp_timer_get_time() - frame_loop_start_us);
         uint32_t now = (uint32_t)esp_log_timestamp();
-        if (now - a->fps_report_ms >= 1000) {
-            a->display_fps    = a->decoded_frames;
+        if (now - a->fps_report_ms >= CAM_FPS_REPORT_INTERVAL_MS) {
+            const uint32_t elapsed_ms = now - a->fps_report_ms;
+            const uint32_t frames = a->decoded_frames;
+            const float fps = elapsed_ms > 0 ? ((float)frames * 1000.0f / (float)elapsed_ms) : 0.0f;
+            const float denom = frames > 0 ? (float)frames : 1.0f;
+            a->display_fps = (uint32_t)(fps + 0.5f);
+            ESP_LOGI(TAG,
+                     "display stats: %.2f fps frames=%u/%ums avg_ms wait=%.2f decode=%.2f convert=%.2f ppa=%.2f blit=%.2f total=%.2f mode=%s %ux%u",
+                     fps,
+                     (unsigned)frames,
+                     (unsigned)elapsed_ms,
+                     (double)((float)stat_wait_us / denom / 1000.0f),
+                     (double)((float)stat_decode_us / denom / 1000.0f),
+                     (double)((float)stat_convert_us / denom / 1000.0f),
+                     (double)((float)stat_ppa_us / denom / 1000.0f),
+                     (double)((float)stat_blit_us / denom / 1000.0f),
+                     (double)((float)stat_total_us / denom / 1000.0f),
+                     uvc_format_name(m->fmt), m->w, m->h);
             a->decoded_frames = 0;
             a->fps_report_ms  = now;
-            ESP_LOGI(TAG, "display fps=%u", (unsigned)a->display_fps);
+            stat_wait_us = 0;
+            stat_decode_us = 0;
+            stat_convert_us = 0;
+            stat_ppa_us = 0;
+            stat_blit_us = 0;
+            stat_total_us = 0;
         }
     }
 }

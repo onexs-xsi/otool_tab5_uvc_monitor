@@ -176,6 +176,9 @@ extern "C" void app_main(void)
     s_app.audio_rec_mutex = xSemaphoreCreateMutex();
     if (!s_app.audio_rec_mutex) { ESP_LOGE(TAG, "audio rec mutex fail"); return; }
 
+    // 初始化高级控件能力表（探测在 open_stream 后执行）
+    cam_ctrl_init_table(&s_app);
+
     {
         usb_host_config_t hcfg = {};
         hcfg.skip_phy_setup = false;
@@ -256,6 +259,7 @@ extern "C" void app_main(void)
                     lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
             }
             ui_update_info_panel(&s_app);
+            ui_update_advanced_button(&s_app);
             otool_lvgl_port_unlock();
         }
 
@@ -282,12 +286,18 @@ extern "C" void app_main(void)
                         lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
                     if (s_app.check_btn)
                         lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
+                    if (s_app.adv_btn)
+                        lv_obj_add_state(s_app.adv_btn, LV_STATE_DISABLED);
+                    if (s_app.adv_switch)
+                        lv_obj_add_state(s_app.adv_switch, LV_STATE_DISABLED);
                     ui_clear_mode_list(&s_app);
                     ui_update_info_panel(&s_app);
+                    ui_update_advanced_button(&s_app);
                     otool_lvgl_port_unlock();
                 }
                 s_app.mode_count = 0;
                 s_app.selected_mode = 0;
+                s_app.adv_touch_down = false;
                 continue;
             }
             if (bits & EV_DEV_CONNECTED) {
@@ -311,6 +321,7 @@ extern "C" void app_main(void)
                             lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
                     }
                     ui_update_info_panel(&s_app);
+                    ui_update_advanced_button(&s_app);
                     otool_lvgl_port_unlock();
                 }
                 continue;
@@ -336,6 +347,7 @@ extern "C" void app_main(void)
                     lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
                 if (s_app.check_btn)
                     lv_obj_clear_state(s_app.check_btn, LV_STATE_DISABLED);
+                ui_update_advanced_button(&s_app);
                 otool_lvgl_port_unlock();
             }
             s_app.state = APP_STATE_SELECTING;
@@ -355,6 +367,7 @@ extern "C" void app_main(void)
                     lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
                 if (s_app.check_btn)
                     lv_obj_clear_state(s_app.check_btn, LV_STATE_DISABLED);
+                ui_update_advanced_button(&s_app);
                 otool_lvgl_port_unlock();
             }
             s_app.state = APP_STATE_SELECTING;
@@ -400,11 +413,14 @@ extern "C" void app_main(void)
             if (s_app.check_btn)
                 lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
             ui_update_info_panel(&s_app);
+            ui_update_advanced_button(&s_app);
             otool_lvgl_port_unlock();
         }
         s_app.mode_count = 0;
         s_app.selected_mode = 0;
         s_app.uac_selected = false;
+        s_app.adv_live_enabled = false;
+        s_app.adv_touch_down = false;
         xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
     }
     // unreachable

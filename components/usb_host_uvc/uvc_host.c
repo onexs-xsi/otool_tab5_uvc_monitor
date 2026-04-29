@@ -1229,3 +1229,17 @@ esp_err_t uvc_host_get_frame_list(uint8_t dev_addr, uint8_t uvc_stream_index, uv
 
     return uvc_desc_get_frame_list(config_desc, uvc_stream_index, frame_info_list, list_size);
 }
+
+esp_err_t uvc_host_get_ctrl_list(uint8_t dev_addr, uint8_t uvc_stream_index, uvc_host_ctrl_info_t (*ctrl_info_list)[], size_t *list_size)
+{
+    UVC_CHECK(list_size, ESP_ERR_INVALID_ARG);
+
+    usb_device_handle_t dev_hdl;
+    const usb_config_desc_t *config_desc = NULL;
+    if (usb_host_device_open(p_uvc_host_driver->usb_client_hdl, dev_addr, &dev_hdl) == ESP_OK) {
+        usb_host_get_active_config_descriptor(dev_hdl, &config_desc);
+        ESP_RETURN_ON_ERROR(usb_host_device_close(p_uvc_host_driver->usb_client_hdl, dev_hdl), TAG, "Unable to close USB device");
+    }
+
+    return uvc_desc_get_ctrl_list(config_desc, uvc_stream_index, ctrl_info_list, list_size);
+}

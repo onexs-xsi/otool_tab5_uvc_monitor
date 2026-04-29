@@ -68,6 +68,22 @@ typedef struct {
 } uvc_host_frame_info_t;
 
 /**
+ * @brief UVC VideoControl entity control advertised in descriptors.
+ *
+ * This is parsed from class-specific VC descriptors only. It does not mean
+ * GET/SET requests were already verified; applications can use it as an early
+ * hint before opening a stream, then confirm ranges through control transfers.
+ */
+typedef struct {
+    uint8_t entity_id;        /*!< Unit/terminal ID (for example PU or XU ID). */
+    uint8_t entity_subtype;   /*!< Class-specific VC descriptor subtype. */
+    uint8_t selector;         /*!< Control selector, derived from bmControls bit index + 1. */
+    uint8_t control_size;     /*!< bmControls byte count for this entity descriptor. */
+    uint8_t control_byte;     /*!< Byte index in bmControls where this selector was found. */
+    uint8_t control_bit;      /*!< Bit index in that byte. */
+} uvc_host_ctrl_info_t;
+
+/**
  * @brief UVC host driver event data.
  */
 typedef struct {
@@ -393,6 +409,30 @@ esp_err_t uvc_host_get_frame_list(uint8_t dev_addr,
                                   uint8_t uvc_stream_index,
                                   uvc_host_frame_info_t (*frame_info_list)[],
                                   size_t *list_size);
+
+/**
+ * @brief Retrieve advertised VideoControl entity controls for a UVC function.
+ *
+ * If ctrl_info_list is NULL, this function returns only the number of
+ * advertised controls through list_size. The returned selectors are parsed
+ * from PU/XU bmControls bitmaps and are useful for enabling UI controls before
+ * a stream handle exists.
+ *
+ * @param[in] dev_addr USB device address.
+ * @param[in] uvc_stream_index UVC stream index from the driver event callback.
+ * @param[out] ctrl_info_list Caller-allocated uvc_host_ctrl_info_t array,
+ *                            or NULL to query the count only.
+ * @param[inout] list_size Input: ctrl_info_list capacity. Output: valid or
+ *                         required entry count.
+ * @return
+ *      - ESP_OK on success
+ *      - ESP_ERR_INVALID_ARG if list_size is NULL or the descriptor is invalid
+ *      - ESP_ERR_NOT_FOUND if required UVC control descriptors cannot be found
+ */
+esp_err_t uvc_host_get_ctrl_list(uint8_t dev_addr,
+                                 uint8_t uvc_stream_index,
+                                 uvc_host_ctrl_info_t (*ctrl_info_list)[],
+                                 size_t *list_size);
 
 #ifdef __cplusplus
 }
