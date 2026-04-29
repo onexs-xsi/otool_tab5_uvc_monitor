@@ -354,7 +354,7 @@ void      cam_ctrl_apply_pending(app_t *a);
 
 // main.cpp - 由 UI 触发的 USB 摄像头电源循环（VBUS 关 -> 延时 -> 开），
 // 用于卡死或主控复位后的快速恢复；非阻塞，会创建一个一次性辅助任务。
-void app_request_usb_reinit(app_t *a);
+void app_request_usb_reinit_from_user(app_t *a);
 
 // ui_selection.cpp
 void ui_build_selection(app_t *a);

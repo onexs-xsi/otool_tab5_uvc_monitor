@@ -11,6 +11,7 @@ static void adv_option_click_cb(lv_event_t *e);
 static void adv_close_cb(lv_event_t *e);
 static void adv_overlay_bg_cb(lv_event_t *e);
 static void adv_widget_changed_cb(lv_event_t *e);
+static void adv_step_click_cb(lv_event_t *e);
 
 // ===================================================================
 // LVGL selection UI
@@ -281,7 +282,7 @@ static void uac_switch_cb(lv_event_t *e)
 {
     app_t *a = (app_t *)lv_event_get_user_data(e);
     lv_event_code_t code = lv_event_get_code(e);
-    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_CLICKED) return;
+    if (code != LV_EVENT_VALUE_CHANGED || !a || !a->uac_switch) return;
     if (!a->uac_rx_available) {
         a->uac_selected = false;
         lv_obj_clear_state(a->uac_switch, LV_STATE_CHECKED);
@@ -425,7 +426,7 @@ static void btn_reinit_cb(lv_event_t *e)
     if (a->check_btn)   lv_obj_add_state(a->check_btn, LV_STATE_DISABLED);
     if (a->adv_btn)     lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
     if (a->adv_switch)  lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
-    app_request_usb_reinit(a);
+    app_request_usb_reinit_from_user(a);
 }
 
 // ===================================================================
@@ -441,13 +442,84 @@ static const char *adv_widget_kind(const cam_ctrl_desc_t *d, int *steps)
     int span = d->v_max - d->v_min;
     if (span <= 0) { *steps = 1; return "static"; }
     *steps = span + 1;
-    if (d->v_min == 0 && d->v_max == 1) return "switch";
+    if (d->v_min == 0 && d->v_max == 1) return "toggle";
     if (span >= 2 && span <= 6 && d->value_size == 4 &&
         d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT &&
         (d->selector == UVC_XU_CTRL_SPECIAL_EFFECT || d->selector == UVC_XU_CTRL_WB_MODE)) {
-        return "dropdown";
+        return "stepper";
     }
     return "slider";
+}
+
+enum {
+    ADV_STEP_TOGGLE = 0,
+    ADV_STEP_DEC    = 1,
+    ADV_STEP_INC    = 2,
+};
+
+static void *adv_step_user_data(int idx, int action)
+{
+    return (void *)(intptr_t)(idx * 4 + action + 1);
+}
+
+static bool adv_step_decode(void *user_data, int *idx, int *action)
+{
+    int code = (int)(intptr_t)user_data - 1;
+    if (code < 0) return false;
+    *idx = code / 4;
+    *action = code % 4;
+    return true;
+}
+
+static esp_err_t adv_apply_control_value(app_t *a, int idx, int32_t new_val, bool *deferred)
+{
+    if (deferred) *deferred = false;
+    if (!a || idx < 0 || idx >= (int)CAM_ADV_CTRL_COUNT) return ESP_FAIL;
+    cam_ctrl_desc_t *d = &a->adv_caps[idx];
+    if (!d->supported) return ESP_FAIL;
+
+    if (new_val < d->v_min) new_val = d->v_min;
+    if (new_val > d->v_max) new_val = d->v_max;
+    d->v_cur = new_val;
+
+    esp_err_t err = ESP_FAIL;
+    if (a->stream_hdl && !cam_ctrl_is_live_safe(d)) {
+        if (deferred) *deferred = true;
+    } else if (a->stream_hdl) {
+        err = cam_ctrl_set_int(a->stream_hdl, d, d->v_cur);
+    }
+    d->pending_apply = (err != ESP_OK);
+    return err;
+}
+
+static void adv_update_status(app_t *a, const cam_ctrl_desc_t *d, esp_err_t err, bool deferred)
+{
+    if (!a || !a->adv_status_lbl || !d) return;
+    char buf[80];
+    snprintf(buf, sizeof(buf), "%s = %ld%s", d->name, (long)d->v_cur,
+             (err == ESP_OK) ? "" : (deferred ? " (next start)" : " (pending)"));
+    lv_label_set_text(a->adv_status_lbl, buf);
+}
+
+static void adv_update_toggle_button(lv_obj_t *btn, const cam_ctrl_desc_t *d)
+{
+    if (!btn || !d) return;
+    bool on = d->v_cur >= d->v_max;
+    lv_color_t color = on ? lv_color_make(0x16, 0xA3, 0x4A)
+                          : lv_color_make(0x94, 0xA3, 0xB8);
+    lv_obj_set_style_bg_color(btn, color, 0);
+    lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+    if (lbl) lv_label_set_text(lbl, on ? "ON" : "OFF");
+}
+
+static void adv_update_stepper_label(lv_obj_t *stepper, const cam_ctrl_desc_t *d)
+{
+    if (!stepper || !d) return;
+    lv_obj_t *lbl = lv_obj_get_child(stepper, 1);
+    if (!lbl) return;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%ld", (long)d->v_cur);
+    lv_label_set_text(lbl, buf);
 }
 
 // 用户在面板里调整控件后回调：更新 v_cur，必要时下发或标记 pending。
@@ -499,11 +571,42 @@ static void adv_widget_changed_cb(lv_event_t *e)
     }
 }
 
+static void adv_step_click_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    app_t *a = &s_app;
+    int idx = -1;
+    int action = -1;
+    if (!adv_step_decode(lv_event_get_user_data(e), &idx, &action)) return;
+    if (idx < 0 || idx >= (int)CAM_ADV_CTRL_COUNT) return;
+    cam_ctrl_desc_t *d = &a->adv_caps[idx];
+    if (!d->supported) return;
+
+    int32_t new_val = d->v_cur;
+    if (action == ADV_STEP_TOGGLE) {
+        new_val = (d->v_cur >= d->v_max) ? d->v_min : d->v_max;
+    } else if (action == ADV_STEP_DEC) {
+        new_val = d->v_cur - 1;
+    } else if (action == ADV_STEP_INC) {
+        new_val = d->v_cur + 1;
+    }
+
+    bool deferred = false;
+    esp_err_t err = adv_apply_control_value(a, idx, new_val, &deferred);
+    lv_obj_t *target = (lv_obj_t *)lv_event_get_target(e);
+    if (action == ADV_STEP_TOGGLE) {
+        adv_update_toggle_button(target, d);
+    } else {
+        adv_update_stepper_label(lv_obj_get_parent(target), d);
+    }
+    adv_update_status(a, d, err, deferred);
+}
+
 static void adv_switch_cb(lv_event_t *e)
 {
     app_t *a = (app_t *)lv_event_get_user_data(e);
     lv_event_code_t code = lv_event_get_code(e);
-    if (code != LV_EVENT_VALUE_CHANGED && code != LV_EVENT_CLICKED) return;
+    if (code != LV_EVENT_VALUE_CHANGED) return;
     if (!a || !a->adv_switch) return;
     if (!adv_any_supported(a)) {
         a->adv_live_enabled = false;
@@ -587,31 +690,63 @@ static void adv_build_row(app_t *a, lv_obj_t *parent, int idx)
     int steps = 0;
     const char *kind = adv_widget_kind(d, &steps);
 
-    if (strcmp(kind, "switch") == 0) {
-        lv_obj_t *sw = lv_switch_create(row);
-        lv_obj_set_size(sw, 58, 28);
-        if (d->v_cur >= d->v_max) lv_obj_add_state(sw, LV_STATE_CHECKED);
-        lv_obj_add_event_cb(sw, adv_widget_changed_cb, LV_EVENT_VALUE_CHANGED,
-                            (void *)(intptr_t)idx);
-        lv_obj_set_height(row, 58);
-    } else if (strcmp(kind, "dropdown") == 0) {
-        lv_obj_t *dd = lv_dropdown_create(row);
-        char opts[160] = {0};
-        size_t off = 0;
-        for (int v = d->v_min; v <= d->v_max && off < sizeof(opts) - 8; v++) {
-            int n = snprintf(opts + off, sizeof(opts) - off,
-                             (v == d->v_min) ? "%d" : "\n%d", v);
-            if (n <= 0) break;
-            off += (size_t)n;
-        }
-        lv_dropdown_set_options(dd, opts);
-        int sel = (int)(d->v_cur - d->v_min);
-        if (sel < 0) sel = 0;
-        lv_dropdown_set_selected(dd, (uint16_t)sel);
-        lv_obj_set_width(dd, lv_pct(100));
-        lv_obj_add_event_cb(dd, adv_widget_changed_cb, LV_EVENT_VALUE_CHANGED,
-                            (void *)(intptr_t)idx);
-        lv_obj_set_height(row, 70);
+    if (strcmp(kind, "toggle") == 0) {
+        lv_obj_t *btn = lv_button_create(row);
+        lv_obj_set_width(btn, lv_pct(100));
+        lv_obj_set_height(btn, 40);
+        lv_obj_set_style_radius(btn, 10, 0);
+        lv_obj_set_style_shadow_width(btn, 0, 0);
+        lv_obj_add_event_cb(btn, adv_step_click_cb, LV_EVENT_CLICKED,
+                            adv_step_user_data(idx, ADV_STEP_TOGGLE));
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_center(lbl);
+        adv_update_toggle_button(btn, d);
+        lv_obj_set_height(row, 82);
+    } else if (strcmp(kind, "stepper") == 0) {
+        lv_obj_t *stepper = lv_obj_create(row);
+        lv_obj_set_width(stepper, lv_pct(100));
+        lv_obj_set_height(stepper, 42);
+        lv_obj_set_style_bg_opa(stepper, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(stepper, 0, 0);
+        lv_obj_set_style_pad_all(stepper, 0, 0);
+        lv_obj_set_style_pad_column(stepper, 8, 0);
+        lv_obj_clear_flag(stepper, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_layout(stepper, LV_LAYOUT_FLEX);
+        lv_obj_set_flex_flow(stepper, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(stepper, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *dec = lv_button_create(stepper);
+        lv_obj_set_size(dec, 76, 40);
+        lv_obj_set_style_radius(dec, 10, 0);
+        lv_obj_set_style_bg_color(dec, lv_color_make(0xE2, 0xE8, 0xF0), 0);
+        lv_obj_set_style_shadow_width(dec, 0, 0);
+        lv_obj_add_event_cb(dec, adv_step_click_cb, LV_EVENT_CLICKED,
+                            adv_step_user_data(idx, ADV_STEP_DEC));
+        lv_obj_t *dec_lbl = lv_label_create(dec);
+        lv_label_set_text(dec_lbl, "-");
+        lv_obj_set_style_text_color(dec_lbl, kColTitle, 0);
+        lv_obj_center(dec_lbl);
+
+        lv_obj_t *val_lbl = lv_label_create(stepper);
+        lv_obj_set_width(val_lbl, 150);
+        lv_obj_set_style_text_align(val_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(val_lbl, kColTitle, 0);
+        adv_update_stepper_label(stepper, d);
+
+        lv_obj_t *inc = lv_button_create(stepper);
+        lv_obj_set_size(inc, 76, 40);
+        lv_obj_set_style_radius(inc, 10, 0);
+        lv_obj_set_style_bg_color(inc, kColAccent, 0);
+        lv_obj_set_style_shadow_width(inc, 0, 0);
+        lv_obj_add_event_cb(inc, adv_step_click_cb, LV_EVENT_CLICKED,
+                            adv_step_user_data(idx, ADV_STEP_INC));
+        lv_obj_t *inc_lbl = lv_label_create(inc);
+        lv_label_set_text(inc_lbl, "+");
+        lv_obj_set_style_text_color(inc_lbl, lv_color_white(), 0);
+        lv_obj_center(inc_lbl);
+
+        lv_obj_set_height(row, 84);
     } else {
         // slider: range 0..(span)
         lv_obj_t *sl = lv_slider_create(row);
@@ -1078,9 +1213,19 @@ void ui_build_selection(app_t *a)
     a->uac_switch = lv_switch_create(uac_row);
     lv_obj_set_size(a->uac_switch, 78, 36);
     lv_obj_align(a->uac_switch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_flag(a->uac_switch, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(a->uac_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_event_cb(a->uac_switch, uac_switch_cb, LV_EVENT_VALUE_CHANGED, a);
-    lv_obj_add_event_cb(a->uac_switch, uac_switch_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *uac_switch_hit = lv_obj_create(uac_row);
+    lv_obj_set_size(uac_switch_hit, 96, 52);
+    lv_obj_align(uac_switch_hit, LV_ALIGN_RIGHT_MID, 4, 0);
+    lv_obj_set_style_bg_opa(uac_switch_hit, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(uac_switch_hit, 0, 0);
+    lv_obj_set_style_pad_all(uac_switch_hit, 0, 0);
+    lv_obj_clear_flag(uac_switch_hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(uac_switch_hit, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_flag(uac_switch_hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(uac_switch_hit, uac_option_click_cb, LV_EVENT_CLICKED, a);
 
     // ADVANCED：开关决定视频阶段是否常驻显示右侧参数侧栏；Configuration 用于进入前调整。
     a->adv_container = lv_obj_create(right_panel);
@@ -1114,10 +1259,20 @@ void ui_build_selection(app_t *a)
     a->adv_switch = lv_switch_create(adv_toggle_row);
     lv_obj_set_size(a->adv_switch, 78, 36);
     lv_obj_align(a->adv_switch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_flag(a->adv_switch, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(a->adv_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
     lv_obj_add_event_cb(a->adv_switch, adv_switch_cb, LV_EVENT_VALUE_CHANGED, a);
-    lv_obj_add_event_cb(a->adv_switch, adv_switch_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *adv_switch_hit = lv_obj_create(adv_toggle_row);
+    lv_obj_set_size(adv_switch_hit, 96, 52);
+    lv_obj_align(adv_switch_hit, LV_ALIGN_RIGHT_MID, 4, 0);
+    lv_obj_set_style_bg_opa(adv_switch_hit, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(adv_switch_hit, 0, 0);
+    lv_obj_set_style_pad_all(adv_switch_hit, 0, 0);
+    lv_obj_clear_flag(adv_switch_hit, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(adv_switch_hit, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_flag(adv_switch_hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(adv_switch_hit, adv_option_click_cb, LV_EVENT_CLICKED, a);
 
     a->adv_btn = lv_button_create(a->adv_container);
     lv_obj_set_width(a->adv_btn, lv_pct(100));

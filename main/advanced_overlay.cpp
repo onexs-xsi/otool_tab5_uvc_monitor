@@ -136,22 +136,129 @@ static bool is_binary_ctrl(const cam_ctrl_desc_t *d)
     return d && d->v_min == 0 && d->v_max == 1;
 }
 
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+} adv_rect_t;
+
+static int adv_supported_count(const app_t *a)
+{
+    if (!a) return 0;
+    int count = 0;
+    for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+        if (a->adv_caps[i].supported) count++;
+    }
+    return count;
+}
+
+static adv_rect_t video_rect_logic_for_mode(const app_t *a)
+{
+    adv_rect_t r = {0, 0, PANEL_LOGIC_W, PANEL_LOGIC_H};
+    if (!a || a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return r;
+
+    const cam_mode_t *m = &a->modes[a->selected_mode];
+    if (m->w == 0 || m->h == 0) return r;
+
+    float scale_w = (float)PANEL_PHYS_W / (float)m->h;
+    float scale_h = (float)PANEL_PHYS_H / (float)m->w;
+    float scale = (scale_w < scale_h) ? scale_w : scale_h;
+    if (scale > 2.0f) scale = 2.0f;
+    if (scale < 0.1f) scale = 0.1f;
+
+    int out_w = ((int)((float)m->h * scale + 0.5f)) & ~1;
+    int out_h = ((int)((float)m->w * scale + 0.5f)) & ~1;
+    if (out_w < 1 || out_h < 1) return r;
+    if (out_w > PANEL_PHYS_W) out_w = PANEL_PHYS_W;
+    if (out_h > PANEL_PHYS_H) out_h = PANEL_PHYS_H;
+
+    int off_x = (PANEL_PHYS_W - out_w) / 2;
+    int off_y = (PANEL_PHYS_H - out_h) / 2;
+
+    r.x = PANEL_LOGIC_W - off_y - out_h;
+    r.y = off_x;
+    r.w = out_h;
+    r.h = out_w;
+    if (r.x < 0) r.x = 0;
+    if (r.y < 0) r.y = 0;
+    if (r.x + r.w > PANEL_LOGIC_W) r.w = PANEL_LOGIC_W - r.x;
+    if (r.y + r.h > PANEL_LOGIC_H) r.h = PANEL_LOGIC_H - r.y;
+    return r;
+}
+
+static void panel_rect_for_adv(const app_t *a, int *x, int *y, int *w, int *h)
+{
+    const int margin = 14;
+    const int panel_w = 380;
+    int visible = adv_supported_count(a);
+    int panel_h = 78 + visible * 68 + 14;
+    if (panel_h > PANEL_LOGIC_H - margin * 2) panel_h = PANEL_LOGIC_H - margin * 2;
+    if (panel_h < 150) panel_h = 150;
+
+    adv_rect_t video = video_rect_logic_for_mode(a);
+    adv_rect_t black[4] = {
+        {video.x + video.w, 0, PANEL_LOGIC_W - video.x - video.w, PANEL_LOGIC_H},
+        {0, 0, video.x, PANEL_LOGIC_H},
+        {0, video.y + video.h, PANEL_LOGIC_W, PANEL_LOGIC_H - video.y - video.h},
+        {0, 0, PANEL_LOGIC_W, video.y},
+    };
+
+    int best = -1;
+    for (int i = 0; i < 4; i++) {
+        if (black[i].w >= panel_w && black[i].h >= panel_h) {
+            best = i;
+            break;
+        }
+    }
+
+    if (best >= 0) {
+        *x = black[best].x + (black[best].w - panel_w) / 2;
+        *y = black[best].y + (black[best].h - panel_h) / 2;
+    } else {
+        *x = PANEL_LOGIC_W - panel_w - margin;
+        *y = (PANEL_LOGIC_H - panel_h) / 2;
+    }
+
+    if (*x < margin) *x = margin;
+    if (*y < margin) *y = margin;
+    if (*x + panel_w > PANEL_LOGIC_W - margin) *x = PANEL_LOGIC_W - panel_w - margin;
+    if (*y + panel_h > PANEL_LOGIC_H - margin) *y = PANEL_LOGIC_H - panel_h - margin;
+    *w = panel_w;
+    *h = panel_h;
+}
+
 static bool row_rect_for_ctrl(const app_t *a, int ctrl_idx, int *x, int *y, int *w, int *h)
 {
     if (!a || ctrl_idx < 0 || ctrl_idx >= (int)CAM_ADV_CTRL_COUNT) return false;
+    int panel_x = 0, panel_y = 0, panel_w = 0, panel_h = 0;
+    panel_rect_for_adv(a, &panel_x, &panel_y, &panel_w, &panel_h);
+
     int visible = 0;
     for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
         if (!a->adv_caps[i].supported) continue;
         if (i == ctrl_idx) {
-            *x = PANEL_LOGIC_W - 394 + 14;
-            *y = 92 + visible * 68;
-            *w = 352;
+            *x = panel_x + 14;
+            *y = panel_y + 78 + visible * 68;
+            *w = panel_w - 28;
             *h = 58;
             return true;
         }
         visible++;
     }
     return false;
+}
+
+static void numeric_button_rects_for_row(int x, int y, int w, int h,
+                                         adv_rect_t *dec, adv_rect_t *inc)
+{
+    const int btn_w = 64;
+    const int btn_h = 26;
+    const int btn_y = y + h - btn_h - 4;
+    const int dec_x = x + w - 158;
+    const int inc_x = x + w - 80;
+    if (dec) *dec = {dec_x, btn_y, btn_w, btn_h};
+    if (inc) *inc = {inc_x, btn_y, btn_w, btn_h};
 }
 
 static bool read_touch_logic_adv(app_t *a, int *logic_x, int *logic_y)
@@ -216,13 +323,16 @@ void adv_overlay_touch_poll(app_t *a)
         if (is_binary_ctrl(d)) {
             value = (d->v_cur >= d->v_max) ? d->v_min : d->v_max;
         } else {
-            const int track_x = x + 18;
-            const int track_w = w - 36;
-            int rel = tx - track_x;
-            if (rel < 0) rel = 0;
-            if (rel > track_w) rel = track_w;
-            const int32_t span = d->v_max - d->v_min;
-            value = d->v_min + (int32_t)(((int64_t)rel * span + track_w / 2) / track_w);
+            adv_rect_t dec = {};
+            adv_rect_t inc = {};
+            numeric_button_rects_for_row(x, y, w, h, &dec, &inc);
+            if (tx >= dec.x && tx < dec.x + dec.w && ty >= dec.y && ty < dec.y + dec.h) {
+                value = d->v_cur - 1;
+            } else if (tx >= inc.x && tx < inc.x + inc.w && ty >= inc.y && ty < inc.y + inc.h) {
+                value = d->v_cur + 1;
+            } else {
+                return;
+            }
         }
         apply_adv_value(a, d, value);
         return;
@@ -242,17 +352,18 @@ void draw_adv_overlay(app_t *a)
     const uint16_t green = rgb565_adv(0x16, 0xA3, 0x4A);
     const uint16_t amber = rgb565_adv(0xD9, 0x77, 0x06);
 
-    const int panel_x = PANEL_LOGIC_W - 394;
-    const int panel_y = 14;
-    const int panel_w = 380;
-    const int panel_h = PANEL_LOGIC_H - 28;
+    int panel_x = 0;
+    int panel_y = 0;
+    int panel_w = 0;
+    int panel_h = 0;
+    panel_rect_for_adv(a, &panel_x, &panel_y, &panel_w, &panel_h);
 
     panel_prepare_dirty_logic(a, panel_x, panel_y, panel_w, panel_h);
 
     fill_rect_logic_adv(a, panel_x, panel_y, panel_w, panel_h, panel_bg, 232);
     draw_rect_border_logic_adv(a, panel_x, panel_y, panel_w, panel_h, border, 220);
     draw_text_logic_adv(a, panel_x + 18, panel_y + 18, "CAMERA ADVANCED", text, 245, 3);
-    draw_text_logic_adv(a, panel_x + 20, panel_y + 54, "TAP ROW TO ADJUST", muted, 230, 2);
+    draw_text_logic_adv(a, panel_x + 20, panel_y + 54, "TAP - / +", muted, 230, 2);
 
     int row_order = 0;
     for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
@@ -292,17 +403,15 @@ void draw_adv_overlay(app_t *a)
             int knob_x = (d->v_cur >= d->v_max) ? (sx + sw_w - 20) : (sx + 4);
             fill_rect_logic_adv(a, knob_x, sy + 4, 16, 16, rgb565_adv(0xFF, 0xFF, 0xFF), 255);
         } else {
-            const int track_x = x + 104;
-            const int track_y = y + 40;
-            const int track_w = w - 122;
-            fill_rect_logic_adv(a, track_x, track_y, track_w, 8, rgb565_adv(0xCB, 0xD5, 0xE1), 220);
-            int pos = 0;
-            const int32_t span = d->v_max - d->v_min;
-            if (span > 0) pos = (int)(((int64_t)(d->v_cur - d->v_min) * track_w) / span);
-            if (pos < 0) pos = 0;
-            if (pos > track_w) pos = track_w;
-            fill_rect_logic_adv(a, track_x, track_y, pos, 8, accent, 235);
-            fill_rect_logic_adv(a, track_x + pos - 4, track_y - 5, 10, 18, accent, 245);
+            adv_rect_t dec = {};
+            adv_rect_t inc = {};
+            numeric_button_rects_for_row(x, y, w, h, &dec, &inc);
+            fill_rect_logic_adv(a, dec.x, dec.y, dec.w, dec.h, rgb565_adv(0xE2, 0xE8, 0xF0), 235);
+            fill_rect_logic_adv(a, inc.x, inc.y, inc.w, inc.h, accent, 235);
+            draw_rect_border_logic_adv(a, dec.x, dec.y, dec.w, dec.h, border, 200);
+            draw_rect_border_logic_adv(a, inc.x, inc.y, inc.w, inc.h, border, 200);
+            draw_text_logic_adv(a, dec.x + 27, dec.y + 6, "-", text, 245, 2);
+            draw_text_logic_adv(a, inc.x + 27, inc.y + 6, "+", rgb565_adv(0xFF, 0xFF, 0xFF), 245, 2);
         }
     }
 }

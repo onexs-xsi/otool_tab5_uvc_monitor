@@ -30,18 +30,47 @@ portMUX_TYPE s_audio_scope_lock = portMUX_INITIALIZER_UNLOCKED;
 static m5::tab5::otool_tab5_component s_comp;
 static std::atomic<bool> s_reinit_in_flight{false};
 
+enum class usb5v_power_reason_t {
+    startup_enable,
+    user_reinit_disable,
+    user_reinit_enable,
+};
+
+static esp_err_t usb5v_set_allowed(usb5v_power_reason_t reason)
+{
+    bool enable = true;
+    const char *reason_name = "startup";
+    switch (reason) {
+    case usb5v_power_reason_t::startup_enable:
+        enable = true;
+        reason_name = "startup";
+        break;
+    case usb5v_power_reason_t::user_reinit_disable:
+        enable = false;
+        reason_name = "user REINIT";
+        break;
+    case usb5v_power_reason_t::user_reinit_enable:
+        enable = true;
+        reason_name = "user REINIT";
+        break;
+    }
+
+    ESP_LOGI(TAG, "USB5V %s (%s)", enable ? "ON" : "OFF", reason_name);
+    return s_comp.usb5v_enable(enable);
+}
+
 static void usb_reinit_task(void *arg)
 {
     app_t *aa = (app_t *)arg;
     ESP_LOGI(TAG, "REINIT: powering USB5V OFF");
-    esp_err_t err = s_comp.usb5v_enable(false);
+    esp_err_t err = usb5v_set_allowed(usb5v_power_reason_t::user_reinit_disable);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "REINIT: usb5v OFF returned %s", esp_err_to_name(err));
     }
     if (aa) ui_set_status(aa, "USB power OFF, waiting...");
     vTaskDelay(pdMS_TO_TICKS(800));
     ESP_LOGI(TAG, "REINIT: powering USB5V ON");
-    err = s_comp.usb5v_enable(true);
+    err = usb5v_set_allowed(usb5v_power_reason_t::user_reinit_enable);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "REINIT: usb5v ON returned %s", esp_err_to_name(err));
     }
@@ -50,7 +79,7 @@ static void usb_reinit_task(void *arg)
     vTaskDelete(nullptr);
 }
 
-void app_request_usb_reinit(app_t *a)
+void app_request_usb_reinit_from_user(app_t *a)
 {
     if (!a) return;
     if (a->state == APP_STATE_STREAMING) {
@@ -114,7 +143,7 @@ extern "C" void app_main(void)
     // ------------------------------------------------------------------
     // 3. USB 5V 输出
     // ------------------------------------------------------------------
-    err = comp.usb5v_enable(true);
+    err = usb5v_set_allowed(usb5v_power_reason_t::startup_enable);
     if (err != ESP_OK) { ESP_LOGE(TAG, "usb5v: %s", esp_err_to_name(err)); return; }
     ESP_LOGI(TAG, "USB 5V ON");
 
