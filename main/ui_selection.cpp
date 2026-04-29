@@ -1,6 +1,10 @@
 // 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
 
+#ifndef TAB5_APP_VERSION_BUILD
+#define TAB5_APP_VERSION_BUILD "vdev_unknown"
+#endif
+
 // 文件内静态前向声明（事件回调互相引用）
 static void check_close_cb(lv_event_t *e);
 static void btn_check_cb(lv_event_t *e);
@@ -1149,8 +1153,18 @@ void ui_build_selection(app_t *a)
 
     lv_obj_t *sub_lbl = lv_label_create(left_panel);
     lv_label_set_text(sub_lbl, "Descriptor order is preserved. Pick one mode or run CHECK first.");
+    lv_obj_set_width(sub_lbl, left_w - 44 - 240);
+    lv_label_set_long_mode(sub_lbl, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_color(sub_lbl, lv_color_make(0x64, 0x74, 0x8B), 0);
     lv_obj_align(sub_lbl, LV_ALIGN_TOP_LEFT, 18, 34);
+
+    lv_obj_t *version_lbl = lv_label_create(left_panel);
+    lv_label_set_text(version_lbl, TAB5_APP_VERSION_BUILD);
+    lv_obj_set_width(version_lbl, 220);
+    lv_label_set_long_mode(version_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(version_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_color(version_lbl, lv_color_make(0x94, 0xA3, 0xB8), 0);
+    lv_obj_align(version_lbl, LV_ALIGN_TOP_RIGHT, -18, 34);
 
     a->list_obj = lv_obj_create(left_panel);
     lv_obj_set_size(a->list_obj, left_w - 44, content_h - 104);
