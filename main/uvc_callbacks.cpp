@@ -85,6 +85,8 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     unsigned mjpeg_entries = 0;
     unsigned yuy2_entries = 0;
+    unsigned uyvy_entries = 0;
+    unsigned gray8_entries = 0;
     unsigned rgbp_entries = 0;
     unsigned h264_entries = 0;
     unsigned h265_entries = 0;
@@ -96,6 +98,8 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
         switch (fi->format) {
         case UVC_VS_FORMAT_MJPEG: mjpeg_entries++; break;
         case UVC_VS_FORMAT_YUY2:  yuy2_entries++; break;
+        case UVC_VS_FORMAT_UYVY:  uyvy_entries++; break;
+        case UVC_VS_FORMAT_GRAY8: gray8_entries++; break;
         case UVC_VS_FORMAT_RGBP:  rgbp_entries++; break;
         case UVC_VS_FORMAT_H264:  h264_entries++; break;
         case UVC_VS_FORMAT_H265:  h265_entries++; break;
@@ -128,9 +132,10 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     if (a->mode_count == 0) {
         ESP_LOGW(TAG,
-                 "No modes found within hw limit %ux%u: MJPEG=%u YUY2=%u RGBP=%u H264=%u H265=%u other=%u",
+                 "No modes found within hw limit %ux%u: MJPEG=%u YUY2=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
                  CAM_MAX_SRC_W, CAM_MAX_SRC_H,
-                 mjpeg_entries, yuy2_entries, rgbp_entries, h264_entries, h265_entries, other_entries);
+                 mjpeg_entries, yuy2_entries, uyvy_entries, gray8_entries,
+                 rgbp_entries, h264_entries, h265_entries, other_entries);
         return;
     }
     // 菜单顺序沿用设备描述符顺序，便于和 UVC frame list 日志一一对应。

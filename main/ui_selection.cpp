@@ -75,16 +75,19 @@ void ui_update_info_panel(app_t *a)
     }
 
     if (a->info_formats_lbl) {
-        unsigned mjpeg = 0, yuy2 = 0, rgbp = 0, other = 0;
+        unsigned mjpeg = 0, yuy2 = 0, uyvy = 0, gray8 = 0, rgbp = 0, other = 0;
         for (size_t i = 0; i < a->mode_count; i++) {
             switch (a->modes[i].fmt) {
             case UVC_VS_FORMAT_MJPEG: mjpeg++; break;
             case UVC_VS_FORMAT_YUY2:  yuy2++; break;
+            case UVC_VS_FORMAT_UYVY:  uyvy++; break;
+            case UVC_VS_FORMAT_GRAY8: gray8++; break;
             case UVC_VS_FORMAT_RGBP:  rgbp++; break;
             default:                  other++; break;
             }
         }
-        snprintf(buf, sizeof(buf), "Formats\nMJPEG %u  YUY2 %u\nRGBP %u  Other %u", mjpeg, yuy2, rgbp, other);
+        snprintf(buf, sizeof(buf), "Formats\nMJPEG %u  YUY2 %u\nUYVY %u  GRAY8 %u\nRGBP %u  Other %u",
+                 mjpeg, yuy2, uyvy, gray8, rgbp, other);
         lv_label_set_text(a->info_formats_lbl, buf);
     }
 

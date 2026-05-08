@@ -15,6 +15,8 @@ const char *uvc_format_name(enum uvc_host_stream_format fmt)
     case UVC_VS_FORMAT_DEFAULT: return "DEFAULT";
     case UVC_VS_FORMAT_MJPEG:   return "MJPEG";
     case UVC_VS_FORMAT_YUY2:    return "YUY2";
+    case UVC_VS_FORMAT_UYVY:    return "UYVY";
+    case UVC_VS_FORMAT_GRAY8:   return "GRAY8";
     case UVC_VS_FORMAT_RGBP:    return "RGBP";
     case UVC_VS_FORMAT_H264:    return "H264";
     case UVC_VS_FORMAT_H265:    return "H265";

@@ -228,6 +228,76 @@ void video_loop(app_t *a)
                 frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
                 rendered = true;
             }
+        } else if (frame->vs_format.format == UVC_VS_FORMAT_UYVY) {
+            size_t required = (size_t)src_w * src_h * 2;
+            if (frame->data_len < required) {
+                ESP_LOGW(TAG, "UYVY frame too small: got=%u need=%u",
+                         (unsigned)frame->data_len, (unsigned)required);
+                uvc_host_frame_return(a->stream_hdl, frame);
+                continue;
+            }
+            if (!a->decode_buf || a->decode_buf_size < required) {
+                ESP_LOGW(TAG, "UYVY conv buf missing: have=%u need=%u",
+                         (unsigned)a->decode_buf_size, (unsigned)required);
+                uvc_host_frame_return(a->stream_hdl, frame);
+                continue;
+            }
+
+            // 软件 UYVY -> RGB565
+            const int64_t convert_start_us = esp_timer_get_time();
+            uyvy_to_rgb565(frame->data, (uint16_t *)a->decode_buf,
+                           ((size_t)src_w * src_h) / 2);
+            esp_cache_msync(a->decode_buf, required,
+                            ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+            frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
+            uvc_host_frame_return(a->stream_hdl, frame);
+
+            size_t rgb_size = (size_t)src_w * src_h * 2;
+            const int64_t ppa_start_us = esp_timer_get_time();
+            esp_err_t ppa_err = ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
+                                                 PPA_SRM_COLOR_MODE_RGB565);
+            frame_ppa_us = (uint64_t)(esp_timer_get_time() - ppa_start_us);
+            if (ppa_err == ESP_OK) {
+                const int64_t blit_start_us = esp_timer_get_time();
+                render_overlays_and_blit(a);
+                frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
+                rendered = true;
+            }
+        } else if (frame->vs_format.format == UVC_VS_FORMAT_GRAY8) {
+            size_t required = (size_t)src_w * src_h;
+            size_t rgb_size = (size_t)src_w * src_h * 2;
+            if (frame->data_len < required) {
+                ESP_LOGW(TAG, "GRAY8 frame too small: got=%u need=%u",
+                         (unsigned)frame->data_len, (unsigned)required);
+                uvc_host_frame_return(a->stream_hdl, frame);
+                continue;
+            }
+            if (!a->decode_buf || a->decode_buf_size < rgb_size) {
+                ESP_LOGW(TAG, "GRAY8 conv buf missing: have=%u need=%u",
+                         (unsigned)a->decode_buf_size, (unsigned)rgb_size);
+                uvc_host_frame_return(a->stream_hdl, frame);
+                continue;
+            }
+
+            // 软件 GRAY8 -> RGB565
+            const int64_t convert_start_us = esp_timer_get_time();
+            gray8_to_rgb565(frame->data, (uint16_t *)a->decode_buf,
+                            (size_t)src_w * src_h);
+            esp_cache_msync(a->decode_buf, rgb_size,
+                            ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+            frame_convert_us = (uint64_t)(esp_timer_get_time() - convert_start_us);
+            uvc_host_frame_return(a->stream_hdl, frame);
+
+            const int64_t ppa_start_us = esp_timer_get_time();
+            esp_err_t ppa_err = ppa_scale_rotate(a, a->decode_buf, rgb_size, src_w, src_h,
+                                                 PPA_SRM_COLOR_MODE_RGB565);
+            frame_ppa_us = (uint64_t)(esp_timer_get_time() - ppa_start_us);
+            if (ppa_err == ESP_OK) {
+                const int64_t blit_start_us = esp_timer_get_time();
+                render_overlays_and_blit(a);
+                frame_blit_us = (uint64_t)(esp_timer_get_time() - blit_start_us);
+                rendered = true;
+            }
         } else if (frame->vs_format.format == UVC_VS_FORMAT_RGBP) {
             // RGB565 LE (RGBP) — no color conversion needed, copy to aligned buf then PPA
             size_t rgb_size = (size_t)src_w * src_h * 2;

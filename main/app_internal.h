@@ -318,6 +318,8 @@ void      panel_prepare_dirty_phys(app_t *a, int x, int y, int w, int h);
 void      panel_prepare_dirty_logic(app_t *a, int x, int y, int w, int h);
 size_t    mjpeg_valid_len(const uint8_t *data, size_t len);
 void      yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs);
+void      uyvy_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs);
+void      gray8_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_count);
 
 // audio_overlay.cpp
 void draw_audio_overlay(app_t *a);

@@ -4,12 +4,21 @@
 bool alloc_stream_resources(app_t *a)
 {
     bool need_jpeg = false;
-    bool need_yuy2 = false;
-    bool need_rgbp = false;
+    bool need_rgb565_stage = false;
+    const cam_mode_t *selected = nullptr;
     if (a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count) {
-        need_jpeg = (a->modes[a->selected_mode].fmt == UVC_VS_FORMAT_MJPEG);
-        need_yuy2 = (a->modes[a->selected_mode].fmt == UVC_VS_FORMAT_YUY2);
-        need_rgbp = (a->modes[a->selected_mode].fmt == UVC_VS_FORMAT_RGBP);
+        selected = &a->modes[a->selected_mode];
+        need_jpeg = (selected->fmt == UVC_VS_FORMAT_MJPEG);
+        switch (selected->fmt) {
+        case UVC_VS_FORMAT_YUY2:
+        case UVC_VS_FORMAT_UYVY:
+        case UVC_VS_FORMAT_GRAY8:
+        case UVC_VS_FORMAT_RGBP:
+            need_rgb565_stage = true;
+            break;
+        default:
+            break;
+        }
     }
 
     if (need_jpeg && !a->decode_buf) {
@@ -25,32 +34,19 @@ bool alloc_stream_resources(app_t *a)
         memset(a->decode_buf, 0, a->decode_buf_size);
     }
 
-    // YUY2 路径需要把 YUYV 软件转为 RGB565 再交给 PPA（本芯片版本 PPA SRM 不支持 YUYV 输入）
-    if (need_yuy2 && !a->decode_buf) {
-        const cam_mode_t *m = &a->modes[a->selected_mode];
-        size_t need = (size_t)m->w * m->h * 2;
-        if (need < 64) need = 64;
-        // 64B 对齐，便于 esp_cache_msync 与 PPA DMA 操作
-        a->decode_buf = (uint8_t *)heap_caps_aligned_alloc(
-            64, need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!a->decode_buf) {
-            ESP_LOGE(TAG, "yuy2 conv buf alloc fail size=%u", (unsigned)need);
-            free_stream_resources(a);
-            return false;
-        }
-        a->decode_buf_size = need;
-        memset(a->decode_buf, 0, a->decode_buf_size);
-    }
-
-    // RGBP 路径：帧数据已是 RGB565 LE，直接送 PPA，但需 64B 对齐中间 buf
-    if (need_rgbp && !a->decode_buf) {
-        const cam_mode_t *m = &a->modes[a->selected_mode];
-        size_t need = (size_t)m->w * m->h * 2;
+    // 非 JPEG 路径统一使用 RGB565 中间缓冲：
+    // - YUY2 / UYVY: 软件转 RGB565
+    // - GRAY8: 灰度扩展到 RGB565
+    // - RGBP: 直接拷贝到 64B 对齐缓冲后交给 PPA
+    if (need_rgb565_stage && !a->decode_buf) {
+        size_t need = (size_t)selected->w * selected->h * 2;
         if (need < 64) need = 64;
         a->decode_buf = (uint8_t *)heap_caps_aligned_alloc(
             64, need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!a->decode_buf) {
-            ESP_LOGE(TAG, "rgbp buf alloc fail size=%u", (unsigned)need);
+            ESP_LOGE(TAG, "stage buf alloc fail fmt=%s size=%u",
+                     selected ? uvc_format_name(selected->fmt) : "UNKNOWN",
+                     (unsigned)need);
             free_stream_resources(a);
             return false;
         }

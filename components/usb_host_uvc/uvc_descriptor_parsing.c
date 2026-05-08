@@ -166,6 +166,10 @@ int uvc_desc_parse_format(const uvc_format_desc_t *format_desc)
         // We do not check full guid, but only the first 4 characters that show human readable format
         if (strncmp(guid, "YUY2", 4) == 0) {
             ret = UVC_VS_FORMAT_YUY2;
+        } else if (strncmp(guid, "UYVY", 4) == 0) {
+            ret = UVC_VS_FORMAT_UYVY;
+        } else if (strncmp(guid, "Y800", 4) == 0 || strncmp(guid, "GREY", 4) == 0) {
+            ret = UVC_VS_FORMAT_GRAY8;
         } else if (strncmp(guid, "RGBP", 4) == 0) {
             ret = UVC_VS_FORMAT_RGBP;
         }
@@ -583,6 +587,8 @@ esp_err_t uvc_desc_get_frame_list(const usb_config_desc_t *config_desc, uint8_t 
         frame_info->v_res = this_frame->wHeight;
         switch (current_format_type) {
         case UVC_VS_FORMAT_YUY2:
+        case UVC_VS_FORMAT_UYVY:
+        case UVC_VS_FORMAT_GRAY8:
         case UVC_VS_FORMAT_RGBP:
         case UVC_VS_FORMAT_MJPEG:
             frame_info->default_interval = this_frame->mjpeg_uncompressed.dwDefaultFrameInterval;

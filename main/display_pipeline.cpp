@@ -257,3 +257,29 @@ void yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs)
     }
 }
 
+void uyvy_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs)
+{
+    for (size_t i = 0; i < pixel_pairs; i++) {
+        const int u  = src[0];
+        const int y0 = src[1];
+        const int v  = src[2];
+        const int y1 = src[3];
+        dst[0] = yuv2rgb565(y0, u, v);
+        dst[1] = yuv2rgb565(y1, u, v);
+        src += 4;
+        dst += 2;
+    }
+}
+
+static inline uint16_t gray_to_rgb565(uint8_t gray)
+{
+    return (uint16_t)(((gray & 0xF8) << 8) | ((gray & 0xFC) << 3) | (gray >> 3));
+}
+
+void gray8_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_count)
+{
+    for (size_t i = 0; i < pixel_count; i++) {
+        dst[i] = gray_to_rgb565(src[i]);
+    }
+}
+
