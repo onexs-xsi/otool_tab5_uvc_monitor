@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 onexs-xsi
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 // UVC Camera Display Demo - M5 TAB5 (ESP32-P4)
 //
 // 主流程：

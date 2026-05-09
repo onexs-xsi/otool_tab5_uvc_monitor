@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 onexs-xsi
+#
+# SPDX-License-Identifier: MIT
+
 idf_component_register(SRCS "main.cpp"
                            "cam_modes.cpp"
                            "display_pipeline.cpp"

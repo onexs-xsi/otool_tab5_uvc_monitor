@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 onexs-xsi
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 // 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
 
@@ -288,4 +294,3 @@ void gray8_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_count)
         dst[i] = gray_to_rgb565(src[i]);
     }
 }
-

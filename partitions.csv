@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 onexs-xsi
+#
+# SPDX-License-Identifier: MIT
+#
 # Custom partition table — M5Stack TAB5 (ESP32-P4, 16 MB Flash)
 #
 # Name,     Type,  SubType,  Offset,   Size,

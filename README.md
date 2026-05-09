@@ -1,5 +1,7 @@
 # otool_tab5_uvc_monitor
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 简体中文 | [English](README_EN.md)
 
 基于 **M5 TAB5 (ESP32-P4)** 的实时 UVC 摄像头显示 Demo。固件会在 LVGL 选择界面中枚举 USB 摄像头模式，将所选格式流式显示到内置 DSI 屏幕，并可选启用 UAC 音频，还支持在播放阶段常驻一个直接绘制的高级相机控制侧栏。
@@ -129,6 +131,10 @@ components/
 
 ---
 
-## License
+## 许可证
 
-各组件的许可证请分别查看对应目录。
+本项目自有代码采用 MIT License，详见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 onexs-xsi
+
+第三方组件和上游移植代码保留其各自目录中的许可证声明。

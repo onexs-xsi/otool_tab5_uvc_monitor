@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 onexs-xsi
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 // 视频阶段的 ADVANCED 直接叠加层：绘制到 panel_buf，避免 LVGL DSI 整屏 flush 盖住视频。
 // 性能优化（A）：所有几何/文字都用「物理坐标 + 不透明 RGB565」直接写连续内存，
 //   旧实现按逻辑坐标做旋转 + 每像素 alpha 混合，每像素跨 1440 字节 SPIRAM 跨步、

@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: 2026 onexs-xsi
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
 // 内部共享头文件：拆分后的多个 .cpp 模块共享同一份类型/常量与全局状态。
 // 仅在本 main 组件内部使用，不对外发布。
 #pragma once

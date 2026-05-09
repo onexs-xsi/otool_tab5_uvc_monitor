@@ -1,5 +1,7 @@
 # otool_tab5_uvc_monitor
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 [简体中文](README.md) | English
 
 A real-time UVC camera display demo for **M5 TAB5 (ESP32-P4)**. The firmware enumerates USB camera modes in an LVGL selection UI, streams the selected format to the built-in DSI panel, optionally enables UAC audio, and can keep a directly rendered advanced camera-control sidebar visible during playback.
@@ -131,4 +133,8 @@ Selection and overlay limits such as the **1280x720 start cap** and advanced-con
 
 ## License
 
-See the corresponding component directories for individual licenses.
+This project's own code is licensed under the MIT License. See [LICENSE](LICENSE).
+
+Copyright (c) 2026 onexs-xsi
+
+Third-party components and upstream-derived code keep their own license notices in the corresponding directories.

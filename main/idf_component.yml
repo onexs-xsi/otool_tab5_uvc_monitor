@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 onexs-xsi
+#
+# SPDX-License-Identifier: MIT
+#
 ## IDF component manifest for main
 dependencies:
   idf: '>=6.0'
