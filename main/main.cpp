@@ -103,6 +103,9 @@ static void app_reset_connected_device_state(app_t *a)
     a->selected_mode = 0;
     a->dev_addr = 0;
     a->stream_idx = 0;
+    a->stream_restart_requested = false;
+    a->uvc_frame_size_override = 0;
+    a->stream_restart_count = 0;
     a->uac_selected = false;
     a->adv_live_enabled = false;
     a->adv_touch_down = false;
@@ -377,7 +380,24 @@ extern "C" void app_main(void)
                             pdTRUE, pdFALSE, portMAX_DELAY);
         s_app.state = APP_STATE_SELECTING;
 
-        app_refresh_connected_selection_ui(&s_app, nullptr);
+        ui_set_status(&s_app, "Camera connected, reading CONFIGURATION...");
+        bool config_preflight_ok = false;
+        if (s_app.mode_count > 0) {
+            config_preflight_ok = probe_stream_configuration(&s_app, s_app.selected_mode);
+        }
+
+        if ((xEventGroupGetBits(s_app.events) & EV_DEV_LOST) ||
+            (s_app.dev_addr != 0 && !usb_addr_present(s_app.dev_addr))) {
+            ESP_LOGW(TAG, "Device lost during CONFIGURATION preflight");
+            app_handle_selecting_device_lost(&s_app, "Camera disconnected, waiting...");
+            continue;
+        }
+
+        app_refresh_connected_selection_ui(
+            &s_app,
+            config_preflight_ok ?
+                "CONFIGURATION verified from UVC GET_*" :
+                "Select mode and press START");
 
         // 等待用户确认、设备断开、热插拔重连，或稍后检测到 UAC。
         while (true) {
@@ -406,8 +426,23 @@ extern "C" void app_main(void)
             }
             if (bits & EV_DEV_CONNECTED) {
                 // 热插拔：摄像头重新上电后会以新地址枚举，这里刷新选择面板。
-                ESP_LOGI(TAG, "Hot-plug: device reconnected, refreshing mode list");
-                app_refresh_connected_selection_ui(&s_app, "Select mode and press START");
+                ESP_LOGI(TAG, "Hot-plug: device reconnected, verifying CONFIGURATION");
+                ui_set_status(&s_app, "Camera reconnected, reading CONFIGURATION...");
+                bool hotplug_config_ok = false;
+                if (s_app.mode_count > 0) {
+                    hotplug_config_ok = probe_stream_configuration(&s_app, s_app.selected_mode);
+                }
+                if ((xEventGroupGetBits(s_app.events) & EV_DEV_LOST) ||
+                    (s_app.dev_addr != 0 && !usb_addr_present(s_app.dev_addr))) {
+                    ESP_LOGW(TAG, "Device lost during hot-plug CONFIGURATION preflight");
+                    app_handle_selecting_device_lost(&s_app, "Camera disconnected, waiting...");
+                    continue;
+                }
+                app_refresh_connected_selection_ui(
+                    &s_app,
+                    hotplug_config_ok ?
+                        "CONFIGURATION verified from UVC GET_*" :
+                        "Select mode and press START");
                 continue;
             }
             if (bits & EV_USER_CONFIRMED) {
@@ -439,6 +474,9 @@ extern "C" void app_main(void)
         }
 
         panel_clear(&s_app);
+        s_app.stream_restart_requested = false;
+        s_app.uvc_frame_size_override = 0;
+        s_app.stream_restart_count = 0;
 
         if (!open_stream(&s_app, s_app.selected_mode)) {
             ESP_LOGE(TAG, "Failed to open stream");

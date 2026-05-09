@@ -176,7 +176,6 @@ void cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_i
     esp_err_t err = uvc_host_get_ctrl_list(dev_addr, uvc_stream_index, NULL, &ctrl_count);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "adv desc: control descriptor parse failed: %s", esp_err_to_name(err));
-        a->adv_caps_probed = true;  // 探测失败也标记完成，使 CONFIGURATION 按钮可用
         return;
     }
     if (ctrl_count == 0) {
@@ -223,8 +222,9 @@ void cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_i
             supported++;
         }
     }
-    a->adv_caps_probed = true;
-        ESP_LOGI(TAG, "adv desc: %d/%d candidate controls advertised by descriptor; actual support verified via GET_* after stream open",
+    a->adv_caps_probed = (supported == 0);
+    ESP_LOGI(TAG,
+             "adv desc: %d/%d candidate controls advertised by descriptor; CONFIGURATION waits for stream GET_* verification",
              supported, (int)CAM_ADV_CTRL_COUNT);
     free(ctrls);
 }

@@ -175,8 +175,19 @@ bool uvc_frame_payload_header_validate(const uvc_payload_header_t *hdr, size_t p
 
 #if CONFIG_UVC_CHECK_PAYLOAD_HEADER_EOH
     // 按 UVC 规范校验 EOH 位，避免把截断 header 当作有效负载。
+    // Some TinyUSB-based devices emit a valid 2-byte base header as 02 01/02 03
+    // without setting EOH. Treat that minimal header as complete; optional
+    // PTS/SCR/payload-specific headers still require EOH and length checks.
     if (!hdr->bmHeaderInfo.end_of_header) {
-        return false;
+        const bool minimal_base_header =
+            header_len == sizeof(uvc_payload_header_t) &&
+            !hdr->bmHeaderInfo.presentation_time &&
+            !hdr->bmHeaderInfo.source_clock_reference &&
+            !hdr->bmHeaderInfo.payload_specific &&
+            !hdr->bmHeaderInfo.still_image;
+        if (!minimal_base_header) {
+            return false;
+        }
     }
 #endif // CONFIG_UVC_CHECK_PAYLOAD_HEADER_EOH
 

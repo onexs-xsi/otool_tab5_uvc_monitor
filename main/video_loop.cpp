@@ -27,7 +27,81 @@ void drain_queue(app_t *a)
     }
 }
 
-bool open_stream(app_t *a, int mode_idx)
+static size_t next_adaptive_frame_size(size_t current)
+{
+    if (current < CAM_FRAME_BUF_ADAPT_FIRST) return CAM_FRAME_BUF_ADAPT_FIRST;
+    if (current >= CAM_FRAME_BUF_ADAPT_MAX) return CAM_FRAME_BUF_ADAPT_MAX;
+
+    size_t next = current + CAM_FRAME_BUF_ADAPT_STEP;
+    if (next < current || next > CAM_FRAME_BUF_ADAPT_MAX) next = CAM_FRAME_BUF_ADAPT_MAX;
+    return next;
+}
+
+static bool restart_stream_after_overflow(app_t *a, int mode_idx)
+{
+    if (!a) return false;
+
+    a->stream_restart_requested = false;
+    if (a->events && (xEventGroupGetBits(a->events) & EV_DEV_LOST)) {
+        ESP_LOGW(TAG, "Skip adaptive UVC restart because device was lost");
+        a->stream_active = false;
+        return false;
+    }
+
+    const size_t old_size = a->uvc_frame_size_override;
+    const size_t next_size = next_adaptive_frame_size(old_size);
+    if (a->stream_restart_count >= CAM_OVERFLOW_RESTART_MAX || next_size == old_size) {
+        ESP_LOGE(TAG,
+                 "UVC frame overflow persists: frame_size=%u restart_count=%u/%u, stop stream",
+                 (unsigned)old_size, (unsigned)a->stream_restart_count,
+                 (unsigned)CAM_OVERFLOW_RESTART_MAX);
+        a->stream_active = false;
+        return false;
+    }
+
+    const uint32_t restart_no = a->stream_restart_count + 1;
+    ESP_LOGW(TAG,
+             "Restarting UVC stream after overflow: frame_size %s(%u) -> override(%u), attempt %u/%u",
+             old_size ? "override" : "auto", (unsigned)old_size, (unsigned)next_size,
+             (unsigned)restart_no, (unsigned)CAM_OVERFLOW_RESTART_MAX);
+
+    if (a->stream_hdl) {
+        esp_err_t stop_err = uvc_host_stream_stop(a->stream_hdl);
+        if (stop_err != ESP_OK) {
+            ESP_LOGW(TAG, "stream_stop before adaptive restart failed: %s", esp_err_to_name(stop_err));
+        }
+        drain_queue(a);
+
+        esp_err_t close_err = uvc_host_stream_close(a->stream_hdl);
+        if (close_err != ESP_OK) {
+            ESP_LOGW(TAG, "stream_close before adaptive restart failed: %s", esp_err_to_name(close_err));
+        }
+        a->stream_hdl = nullptr;
+    } else {
+        drain_queue(a);
+    }
+    a->stream_active = false;
+
+    if (a->events && (xEventGroupGetBits(a->events) & EV_DEV_LOST)) {
+        ESP_LOGW(TAG, "Skip adaptive UVC reopen because device was lost while closing old stream");
+        a->stream_restart_requested = false;
+        return false;
+    }
+
+    a->uvc_frame_size_override = next_size;
+    a->stream_restart_count = restart_no;
+    a->stream_restart_requested = false;
+
+    if (!open_stream(a, mode_idx)) {
+        ESP_LOGE(TAG, "Adaptive UVC stream reopen failed at frame_size=%u", (unsigned)next_size);
+        a->stream_active = false;
+        return false;
+    }
+
+    return true;
+}
+
+static bool stream_open_only(app_t *a, int mode_idx)
 {
     if (mode_idx < 0 || mode_idx >= (int)a->mode_count) return false;
     if (a->stream_hdl) {
@@ -50,15 +124,16 @@ bool open_stream(app_t *a, int mode_idx)
     cfg.vs_format.fps        = m->fps;
     cfg.vs_format.format     = m->fmt;
     cfg.advanced.number_of_frame_buffers = CAM_FRAME_CNT;
-    cfg.advanced.frame_size              = 0;
+    cfg.advanced.frame_size              = a->uvc_frame_size_override;
     cfg.advanced.frame_heap_caps         = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     cfg.advanced.number_of_urbs          = CAM_URB_CNT;
     cfg.advanced.urb_size                = CAM_URB_SIZE;
 
     ESP_LOGI(TAG,
-             "Opening stream: addr=%u stream=%u fmt=%s %ux%u @%.1f frame_buffers=%d frame_size=%u urbs=%d urb_size=%u heap_caps=0x%lx",
+             "Opening stream: addr=%u stream=%u fmt=%s %ux%u @%.1f frame_buffers=%d frame_size=%s(%u) urbs=%d urb_size=%u heap_caps=0x%lx",
              a->dev_addr, a->stream_idx, uvc_format_name(m->fmt), m->w, m->h, m->fps,
-             cfg.advanced.number_of_frame_buffers, (unsigned)cfg.advanced.frame_size,
+             cfg.advanced.number_of_frame_buffers,
+             cfg.advanced.frame_size ? "override" : "auto", (unsigned)cfg.advanced.frame_size,
              cfg.advanced.number_of_urbs, (unsigned)cfg.advanced.urb_size,
              (unsigned long)cfg.advanced.frame_heap_caps);
 
@@ -69,21 +144,55 @@ bool open_stream(app_t *a, int mode_idx)
         return false;
     }
 
-    // 控制端点在 stream_open 后已可用；先探测并回放 pending，再启动视频流。
-    // 这样 MJPEG(HW) Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
-    cam_ctrl_probe_all(a);
-    cam_ctrl_apply_pending(a);
+    return true;
+}
 
-    err = uvc_host_stream_start(a->stream_hdl);
+static bool stream_start_only(app_t *a, const cam_mode_t *m)
+{
+    if (!a || !a->stream_hdl || !m) return false;
+
+    esp_err_t err = uvc_host_stream_start(a->stream_hdl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "stream_start failed: %s", esp_err_to_name(err));
         uvc_host_stream_close(a->stream_hdl);
         a->stream_hdl = nullptr;
+        a->stream_active = false;
         return false;
     }
     a->stream_active = true;
     ESP_LOGI(TAG, "Stream started: %s %ux%u @%.1f fps", uvc_format_name(m->fmt), m->w, m->h, m->fps);
     return true;
+}
+
+bool open_stream(app_t *a, int mode_idx)
+{
+    if (!stream_open_only(a, mode_idx)) return false;
+
+    const cam_mode_t *m = &a->modes[mode_idx];
+
+    // 控制端点在 stream_open 后已可用；先探测并回放 pending，再启动视频流。
+    // 这样 MJPEG(HW) Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
+    cam_ctrl_probe_all(a);
+    cam_ctrl_apply_pending(a);
+
+    return stream_start_only(a, m);
+}
+
+bool probe_stream_configuration(app_t *a, int mode_idx)
+{
+    if (!a || mode_idx < 0 || mode_idx >= (int)a->mode_count) return false;
+    if (!stream_open_only(a, mode_idx)) return false;
+
+    ESP_LOGI(TAG, "Configuration preflight: stream opened for GET_* verification without starting video");
+    cam_ctrl_probe_all(a);
+    esp_err_t close_err = uvc_host_stream_close(a->stream_hdl);
+    if (close_err != ESP_OK) {
+        ESP_LOGW(TAG, "Configuration preflight stream close failed: %s", esp_err_to_name(close_err));
+    }
+    a->stream_hdl = nullptr;
+    a->stream_active = false;
+    drain_queue(a);
+    return a->adv_caps_probed;
 }
 
 void video_loop(app_t *a)
@@ -107,11 +216,37 @@ void video_loop(app_t *a)
     uint64_t stat_blit_us = 0;
     uint64_t stat_total_us = 0;
 
-    while (a->stream_active) {
+    while (a->stream_active || a->stream_restart_requested) {
+        if (a->stream_restart_requested) {
+            if (!restart_stream_after_overflow(a, a->selected_mode)) {
+                break;
+            }
+            m = &a->modes[a->selected_mode];
+            src_w = m->w;
+            src_h = m->h;
+            a->decoded_frames = 0;
+            a->fps_report_ms  = (uint32_t)esp_log_timestamp();
+            timeout_count = 0;
+            empty_frame_count = 0;
+            stat_wait_us = 0;
+            stat_decode_us = 0;
+            stat_convert_us = 0;
+            stat_ppa_us = 0;
+            stat_blit_us = 0;
+            stat_total_us = 0;
+            continue;
+        }
+
         uvc_host_frame_t *frame = nullptr;
         const int64_t frame_loop_start_us = esp_timer_get_time();
         const int64_t wait_start_us = frame_loop_start_us;
         if (xQueueReceive(a->frame_queue, &frame, pdMS_TO_TICKS(CAM_FRAME_TIMEOUT_MS)) != pdPASS) {
+            if (a->stream_restart_requested) {
+                continue;
+            }
+            if (!a->stream_active) {
+                break;
+            }
             timeout_count++;
             ESP_LOGW(TAG, "frame timeout #%u: no UVC frame received for %u ms stream_active=%d mode=%s %ux%u @%.1f",
                      (unsigned)timeout_count, CAM_FRAME_TIMEOUT_MS, (int)a->stream_active,

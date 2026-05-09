@@ -45,9 +45,25 @@ static lv_obj_t *ui_create_info_label(lv_obj_t *parent, const char *text, lv_col
     return lbl;
 }
 
+static void ui_reset_touch_cache(app_t *a)
+{
+    if (a && a->lv_touch_indev) {
+        otool_lvgl_port_touch_reset(a->lv_touch_indev);
+    }
+}
+
 static bool adv_any_supported(const app_t *a)
 {
     if (!a || !a->adv_caps_probed) return false;
+    for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
+        if (a->adv_caps[i].supported) return true;
+    }
+    return false;
+}
+
+static bool adv_any_candidate(const app_t *a)
+{
+    if (!a) return false;
     for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
         if (a->adv_caps[i].supported) return true;
     }
@@ -115,6 +131,7 @@ static void ui_check_set_text(lv_obj_t *lbl, const char *text, lv_color_t color)
 static void ui_check_modal_create_locked(app_t *a, lv_obj_t **row_labels, size_t row_label_count)
 {
     if (a->check_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->check_overlay);
         a->check_overlay = nullptr;
         a->check_list = nullptr;
@@ -277,6 +294,7 @@ static void check_task_entry(void *arg)
             if (lbl) lv_label_set_text(lbl, "DONE");
         }
         ui_update_info_panel(a);
+        ui_update_advanced_button(a);
         otool_lvgl_port_unlock();
     } else {
         a->check_running = false;
@@ -410,6 +428,7 @@ static void check_close_cb(lv_event_t *e)
     app_t *a = (app_t *)lv_event_get_user_data(e);
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a || a->check_running) return;
     if (a->check_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->check_overlay);
         a->check_overlay = nullptr;
         a->check_list = nullptr;
@@ -653,6 +672,7 @@ static void adv_overlay_bg_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
     if (lv_event_get_target(e) != a->adv_overlay) return; // 只响应背景点击
     if (a->adv_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->adv_overlay);
         a->adv_overlay = nullptr;
         a->adv_panel = nullptr;
@@ -665,6 +685,7 @@ static void adv_close_cb(lv_event_t *e)
     app_t *a = (app_t *)lv_event_get_user_data(e);
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
     if (a->adv_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->adv_overlay);
         a->adv_overlay = nullptr;
         a->adv_panel = nullptr;
@@ -784,6 +805,7 @@ static void btn_advanced_cb(lv_event_t *e)
 
     // 已存在则刷新
     if (a->adv_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->adv_overlay);
         a->adv_overlay = nullptr;
         a->adv_panel = nullptr;
@@ -871,7 +893,10 @@ void ui_update_advanced_button(app_t *a)
     }
     if (a->adv_lbl) {
         if (!probed) {
-            lv_label_set_text(a->adv_lbl, "Advanced: unavailable");
+            lv_label_set_text(a->adv_lbl,
+                              adv_any_candidate(a) ?
+                                  "Advanced: verifying..." :
+                                  "Advanced: unavailable");
         } else if (!any) {
             lv_label_set_text(a->adv_lbl, "Advanced: no controls");
         } else if (a->adv_live_enabled) {
@@ -888,6 +913,7 @@ void ui_build_stream_overlay(app_t *a)
     if (!otool_lvgl_port_lock(100)) return;
 
     if (a->stream_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->stream_overlay);
         a->stream_overlay = nullptr;
         a->stream_adv_panel = nullptr;
@@ -1000,6 +1026,7 @@ void ui_destroy_stream_overlay(app_t *a)
     if (!a) return;
     if (!otool_lvgl_port_lock(100)) return;
     if (a->stream_overlay) {
+        ui_reset_touch_cache(a);
         lv_obj_delete(a->stream_overlay);
     }
     a->stream_overlay = nullptr;
@@ -1031,6 +1058,7 @@ void ui_style_mode_item(lv_obj_t *item, bool selected)
 void ui_populate_mode_list(app_t *a)
 {
     if (!a->list_obj) return;
+    ui_reset_touch_cache(a);
     lv_obj_clean(a->list_obj);
 
     for (int i = 0; i < (int)a->mode_count; i++) {
@@ -1093,6 +1121,7 @@ void ui_populate_mode_list(app_t *a)
 void ui_clear_mode_list(app_t *a)
 {
     if (!a->list_obj) return;
+    ui_reset_touch_cache(a);
     lv_obj_clean(a->list_obj);
 }
 
@@ -1110,6 +1139,7 @@ void ui_build_selection(app_t *a)
     if (!otool_lvgl_port_lock(0)) { ESP_LOGE(TAG, "lvgl lock fail"); return; }
 
     lv_obj_t *scr = lv_scr_act();
+    ui_reset_touch_cache(a);
     lv_obj_clean(scr);
     lv_obj_set_style_bg_color(scr, lv_color_make(0xEA, 0xF4, 0xFF), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);

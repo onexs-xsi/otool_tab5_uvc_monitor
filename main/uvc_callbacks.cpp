@@ -24,17 +24,26 @@ bool frame_cb(const uvc_host_frame_t *frame, void *user_ctx)
 void stream_event_cb(const uvc_host_stream_event_data_t *event, void *user_ctx)
 {
     app_t *a = (app_t *)user_ctx;
-    ESP_LOGW(TAG, "UVC stream event: %s(%d)", uvc_stream_event_name(event->type), (int)event->type);
+    const bool repeated_overflow =
+        event->type == UVC_HOST_FRAME_BUFFER_OVERFLOW && a->stream_restart_requested;
+    if (!repeated_overflow) {
+        ESP_LOGW(TAG, "UVC stream event: %s(%d)", uvc_stream_event_name(event->type), (int)event->type);
+    }
     if (event->type == UVC_HOST_TRANSFER_ERROR) {
         ESP_LOGW(TAG, "UVC transfer error: %s", esp_err_to_name(event->transfer_error.error));
     } else if (event->type == UVC_HOST_FRAME_BUFFER_OVERFLOW) {
-        ESP_LOGW(TAG, "UVC frame buffer overflow: increase frame buffer size or lower resolution/fps");
+        if (!a->stream_restart_requested) {
+            ESP_LOGW(TAG, "UVC frame buffer overflow: request adaptive stream restart");
+        }
+        a->stream_restart_requested = true;
+        a->stream_active = false;
     } else if (event->type == UVC_HOST_FRAME_BUFFER_UNDERFLOW) {
         ESP_LOGW(TAG, "UVC frame buffer underflow: app is holding buffers too long or too few buffers are configured");
     }
 
     if (event->type == UVC_HOST_DEVICE_DISCONNECTED) {
         ESP_LOGW(TAG, "UVC device disconnected");
+        a->stream_restart_requested = false;
         a->stream_active = false;
         if (a->uac_rx_available && a->uac_addr == a->dev_addr) {
             a->audio_active = false;
@@ -79,8 +88,8 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
     a->stream_idx  = sidx;
     a->mode_count  = 0;
 
-    // 先从 VC 描述符解析 PU/XU bmControls，选择界面即可启用 ADVANCED；
-    // START/CHECK 打开流后再通过 GET_* 控制请求确认精确范围。
+    // 先从 VC 描述符解析 PU/XU bmControls 作为候选；
+    // 挂载后的预检会打开 stream handle，再通过 GET_* 控制请求确认真实范围。
     cam_ctrl_probe_descriptors(a, addr, sidx);
 
     unsigned mjpeg_entries = 0;

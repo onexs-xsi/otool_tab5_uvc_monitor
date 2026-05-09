@@ -70,6 +70,10 @@
 #define CAM_CHECK_ATTEMPTS  5
 #define CAM_CHECK_FRAME_TIMEOUT_MS 1500
 #define CAM_FPS_REPORT_INTERVAL_MS 10000
+#define CAM_FRAME_BUF_ADAPT_FIRST (256 * 1024)
+#define CAM_FRAME_BUF_ADAPT_STEP  (128 * 1024)
+#define CAM_FRAME_BUF_ADAPT_MAX   (512 * 1024)
+#define CAM_OVERFLOW_RESTART_MAX  3
 
 #define AUDIO_SCOPE_W       360
 #define AUDIO_SCOPE_H       96
@@ -191,6 +195,9 @@ typedef struct {
     int                     selected_mode;
     uvc_host_stream_hdl_t   stream_hdl;
     volatile bool           stream_active;
+    volatile bool           stream_restart_requested;
+    size_t                  uvc_frame_size_override;
+    uint32_t                stream_restart_count;
     QueueHandle_t           frame_queue;
 
     // UAC 音频状态
@@ -384,4 +391,5 @@ void free_stream_resources(app_t *a);
 // video_loop.cpp
 void drain_queue(app_t *a);
 bool open_stream(app_t *a, int mode_idx);
+bool probe_stream_configuration(app_t *a, int mode_idx);
 void video_loop(app_t *a);
