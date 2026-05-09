@@ -13,7 +13,8 @@ const char *uvc_format_name(enum uvc_host_stream_format fmt)
 {
     switch (fmt) {
     case UVC_VS_FORMAT_DEFAULT: return "DEFAULT";
-    case UVC_VS_FORMAT_MJPEG:   return "MJPEG";
+    case UVC_VS_FORMAT_MJPEG:    return "MJPEG(HW)";
+    case UVC_VS_FORMAT_MJPEG_SW: return "MJPEG(SW)";
     case UVC_VS_FORMAT_YUY2:    return "YUY2";
     case UVC_VS_FORMAT_UYVY:    return "UYVY";
     case UVC_VS_FORMAT_GRAY8:   return "GRAY8";

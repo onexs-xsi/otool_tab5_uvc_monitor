@@ -85,11 +85,17 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
 {
     panel_dirty_reset(a);
 
+    // ADV 开启时预留物理 py 顶部 ADV_PHY_PY_RESERVE 行给叠加面板，
+    // 视频缩放到剩余高度并向底部偏移，避免与 ADV 控件重叠。
+    const uint32_t avail_phys_h = (a && a->adv_live_enabled)
+                                   ? (PANEL_PHYS_H - ADV_PHY_PY_RESERVE)
+                                   : PANEL_PHYS_H;
+
     // 旋转后图像尺寸: out_w = sh, out_h = sw (90 度)
-    // 目标屏幕: PANEL_PHYS_W x PANEL_PHYS_H
-    // 等比缩放: scale = min(PANEL_PHYS_W / sh, PANEL_PHYS_H / sw)
+    // 目标屏幕: PANEL_PHYS_W x avail_phys_h
+    // 等比缩放: scale = min(PANEL_PHYS_W / sh, avail_phys_h / sw)
     float scale_w = (float)PANEL_PHYS_W / (float)sh;
-    float scale_h = (float)PANEL_PHYS_H / (float)sw;
+    float scale_h = (float)avail_phys_h  / (float)sw;
     float scale   = (scale_w < scale_h) ? scale_w : scale_h;
     if (scale > 2.0f) scale = 2.0f;   // PPA scale 上限
     if (scale < 0.1f) scale = 0.1f;   // PPA scale 下限
@@ -97,9 +103,9 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     uint32_t out_w = (uint32_t)(sh * scale + 0.5f) & ~1u; // 保证偶数
     uint32_t out_h = (uint32_t)(sw * scale + 0.5f) & ~1u;
 
-    // 居中偏移
+    // 偏移：水平方向始终居中；垂直方向 ADV 模式下整体向底部平移
     uint32_t off_x = (PANEL_PHYS_W - out_w) / 2;
-    uint32_t off_y = (PANEL_PHYS_H - out_h) / 2;
+    uint32_t off_y = (PANEL_PHYS_H - avail_phys_h) + (avail_phys_h - out_h) / 2;
 
     // 性能: panel_buf 在 SPIRAM 里, 整屏 1.8MB memset 大约 30~60ms.
     // 输出图像与物理屏对齐时根本没有黑边, 直接跳过清零;

@@ -21,7 +21,8 @@ static uint32_t s_invalid_mjpeg_log_count;
 
 static bool mjpeg_frame_trim(uvc_host_frame_t *frame)
 {
-    if (!frame || frame->vs_format.format != UVC_VS_FORMAT_MJPEG) {
+    if (!frame || (frame->vs_format.format != UVC_VS_FORMAT_MJPEG
+            && frame->vs_format.format != UVC_VS_FORMAT_MJPEG_SW)) {
         return true;
     }
     if (frame->data_len < 4) {
@@ -141,7 +142,8 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
             uvc_stream->single_thread.skip_current_frame = payload_header->bmHeaderInfo.error;
 
             // Check mjpeg frame start
-            if (uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG &&
+            if ((uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG
+                    || uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG_SW) &&
                     (payload_data[0] != JPEG_MARKER || payload_data[1] != JPEG_SOI)) {
                 // We received frame with invalid frame, skip this frame
                 uvc_stream->single_thread.skip_current_frame = true;

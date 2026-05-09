@@ -70,7 +70,7 @@ bool open_stream(app_t *a, int mode_idx)
     }
 
     // 控制端点在 stream_open 后已可用；先探测并回放 pending，再启动视频流。
-    // 这样 JPEG Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
+    // 这样 MJPEG(HW) Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
     cam_ctrl_probe_all(a);
     cam_ctrl_apply_pending(a);
 
@@ -139,7 +139,8 @@ void video_loop(app_t *a)
         uint64_t frame_ppa_us = 0;
         uint64_t frame_blit_us = 0;
 
-        if (frame->vs_format.format == UVC_VS_FORMAT_MJPEG) {
+        if (frame->vs_format.format == UVC_VS_FORMAT_MJPEG
+            || frame->vs_format.format == UVC_VS_FORMAT_MJPEG_SW) {
             if (!a->jpeg_dec || !a->decode_buf) {
                 ESP_LOGW(TAG, "JPEG resources are not ready");
                 uvc_host_frame_return(a->stream_hdl, frame);
@@ -376,4 +377,3 @@ void video_loop(app_t *a)
         }
     }
 }
-

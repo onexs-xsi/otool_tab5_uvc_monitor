@@ -48,6 +48,7 @@ enum uvc_host_stream_format {
     UVC_VS_FORMAT_H265,        /*!< H.265 stream format. */
     UVC_VS_FORMAT_UYVY,        /*!< UYVY stream format. */
     UVC_VS_FORMAT_GRAY8,       /*!< 8-bit grayscale (Y800/GREY) stream format. */
+    UVC_VS_FORMAT_MJPEG_SW,    /*!< Standard MJPEG payload produced by the device software encoder. */
 };
 
 /**

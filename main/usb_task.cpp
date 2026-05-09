@@ -42,8 +42,9 @@ static const cam_ctrl_desc_t kAdvCtrlTable[CAM_ADV_CTRL_COUNT] = {
     { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_VFLIP,          4, false,  0,  1,  0,  0, false, "VFlip"         },
     { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_SPECIAL_EFFECT, 4, false,  0,  6,  0,  0, false, "Effect"        },
     { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_AE_LEVEL,       4, false, -5,  5,  0,  0, false, "AE Level"      },
-    { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_JPEG_QUALITY,   4, false,  1, 63, 17, 17, false, "JPEG Quality"  },
+    { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_MJPEG_HW_QUALITY,4, false,  1, 63, 17, 17, false, "MJPEG(HW) Quality" },
     { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_WB_MODE,        4, false,  0,  4,  0,  0, false, "WB Mode"       },
+    { UVC_ENTITY_ID_EXTENSION_UNIT,  UVC_XU_CTRL_MJPEG_SW_QUALITY,4, false,  1,100, 60, 60, false, "MJPEG(SW) Quality" },
 };
 
 static int cam_ctrl_find_table_index(uint8_t entity_id, uint8_t selector)
@@ -150,9 +151,9 @@ esp_err_t cam_ctrl_probe_one(uvc_host_stream_hdl_t stream_hdl, cam_ctrl_desc_t *
         d->v_cur = d->v_def;
     }
     d->supported = true;
-    ESP_LOGI(TAG, "ctrl probe %s: min=%ld max=%ld def=%ld OK",
+    ESP_LOGI(TAG, "ctrl probe %s: min=%ld max=%ld def=%ld cur=%ld OK",
              d->name ? d->name : "?",
-             (long)d->v_min, (long)d->v_max, (long)d->v_def);
+             (long)d->v_min, (long)d->v_max, (long)d->v_def, (long)d->v_cur);
     return ESP_OK;
 }
 
@@ -175,6 +176,7 @@ void cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_i
     esp_err_t err = uvc_host_get_ctrl_list(dev_addr, uvc_stream_index, NULL, &ctrl_count);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "adv desc: control descriptor parse failed: %s", esp_err_to_name(err));
+        a->adv_caps_probed = true;  // 探测失败也标记完成，使 CONFIGURATION 按钮可用
         return;
     }
     if (ctrl_count == 0) {
@@ -222,7 +224,7 @@ void cam_ctrl_probe_descriptors(app_t *a, uint8_t dev_addr, uint8_t uvc_stream_i
         }
     }
     a->adv_caps_probed = true;
-    ESP_LOGI(TAG, "adv desc: %d/%d expected controls advertised (ranges verified on stream open)",
+        ESP_LOGI(TAG, "adv desc: %d/%d candidate controls advertised by descriptor; actual support verified via GET_* after stream open",
              supported, (int)CAM_ADV_CTRL_COUNT);
     free(ctrls);
 }
@@ -232,22 +234,53 @@ void cam_ctrl_probe_all(app_t *a)
     if (!a || !a->stream_hdl) return;
     int ok_cnt = 0;
     for (size_t i = 0; i < CAM_ADV_CTRL_COUNT; i++) {
-        // 保留旧的 v_cur（用户可能在上次 stream 期间调整过）。
         int32_t prev_cur = a->adv_caps[i].v_cur;
-        bool was_supported = a->adv_caps[i].supported;
+        bool had_pending_apply = a->adv_caps[i].pending_apply;
         cam_ctrl_probe_one(a->stream_hdl, &a->adv_caps[i]);
         if (a->adv_caps[i].supported) {
             ok_cnt++;
-            if (was_supported) {
-                // 复用上次的当前值
+            if (had_pending_apply) {
+                // Only preserve an explicit user override. Descriptor probing
+                // uses static fallback values, so keeping that placeholder here
+                // would hide the real GET_CUR value reported by the device.
                 if (prev_cur < a->adv_caps[i].v_min) prev_cur = a->adv_caps[i].v_min;
                 if (prev_cur > a->adv_caps[i].v_max) prev_cur = a->adv_caps[i].v_max;
                 a->adv_caps[i].v_cur = prev_cur;
+                a->adv_caps[i].pending_apply = true;
+            } else {
+                a->adv_caps[i].pending_apply = false;
             }
         }
     }
     a->adv_caps_probed = true;
-    ESP_LOGI(TAG, "ctrl probe_all: %d/%d supported", ok_cnt, (int)CAM_ADV_CTRL_COUNT);
+    ESP_LOGI(TAG, "ctrl verify: %d/%d controls responded to GET_*", ok_cnt, (int)CAM_ADV_CTRL_COUNT);
+
+    // 打印传感器实际支持的高级控件列表
+    {
+        char adv_buf[256];
+        int pos = 0;
+        int cnt = 0;
+        for (size_t i = 0; i < CAM_ADV_CTRL_COUNT; i++) {
+            if (!a->adv_caps[i].supported) continue;
+            if (cnt > 0 && pos < (int)sizeof(adv_buf) - 2) {
+                adv_buf[pos++] = ',';
+                adv_buf[pos++] = ' ';
+            }
+            const char *name = a->adv_caps[i].name ? a->adv_caps[i].name : "?";
+            size_t nlen = strlen(name);
+            if (pos + (int)nlen < (int)sizeof(adv_buf) - 1) {
+                memcpy(adv_buf + pos, name, nlen);
+                pos += (int)nlen;
+            }
+            cnt++;
+        }
+        adv_buf[pos] = '\0';
+        if (cnt > 0) {
+            ESP_LOGI(TAG, "ADV verified (%d): %s", cnt, adv_buf);
+        } else {
+            ESP_LOGI(TAG, "ADV verified: none");
+        }
+    }
 }
 
 esp_err_t cam_ctrl_set_int(uvc_host_stream_hdl_t stream_hdl,
@@ -289,7 +322,7 @@ bool cam_ctrl_is_live_safe(const cam_ctrl_desc_t *d)
 {
     if (!d) return false;
     /* JPEG quality 会触发 Cam 端重新配置 JPEG 采集路径；streaming 中下发会造成无帧。 */
-    if (d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT && d->selector == UVC_XU_CTRL_JPEG_QUALITY) {
+    if (d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT && d->selector == UVC_XU_CTRL_MJPEG_HW_QUALITY) {
         return false;
     }
     return true;
@@ -312,4 +345,3 @@ void cam_ctrl_apply_pending(app_t *a)
         }
     }
 }
-

@@ -310,6 +310,12 @@ extern "C" void app_main(void)
             if (bits & EV_DEV_LOST) {
                 ESP_LOGW(TAG, "Device lost before confirm");
                 ui_set_status(&s_app, "Camera disconnected, waiting...");
+                // 先清零设备信息，ui_update_info_panel 才能显示空内容
+                s_app.mode_count = 0;
+                s_app.selected_mode = 0;
+                s_app.dev_addr = 0;
+                s_app.stream_idx = 0;
+                s_app.adv_touch_down = false;
                 if (otool_lvgl_port_lock(50)) {
                     if (s_app.confirm_btn)
                         lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
@@ -324,9 +330,6 @@ extern "C" void app_main(void)
                     ui_update_advanced_button(&s_app);
                     otool_lvgl_port_unlock();
                 }
-                s_app.mode_count = 0;
-                s_app.selected_mode = 0;
-                s_app.adv_touch_down = false;
                 continue;
             }
             if (bits & EV_DEV_CONNECTED) {

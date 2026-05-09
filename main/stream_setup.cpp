@@ -8,7 +8,8 @@ bool alloc_stream_resources(app_t *a)
     const cam_mode_t *selected = nullptr;
     if (a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count) {
         selected = &a->modes[a->selected_mode];
-        need_jpeg = (selected->fmt == UVC_VS_FORMAT_MJPEG);
+        need_jpeg = (selected->fmt == UVC_VS_FORMAT_MJPEG
+            || selected->fmt == UVC_VS_FORMAT_MJPEG_SW);
         switch (selected->fmt) {
         case UVC_VS_FORMAT_YUY2:
         case UVC_VS_FORMAT_UYVY:

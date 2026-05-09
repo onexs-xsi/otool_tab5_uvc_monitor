@@ -13,6 +13,7 @@
 #include "uvc_descriptors_priv.h"
 
 #define FLOAT_EQUAL(a, b) (fabsf(a - b) < 0.0001f) // For comparing float values with acceptable difference (epsilon value)
+#define UVC_MJPEG_FORMAT_FLAG_SW_ENCODER 0x80U
 
 /**
  * @brief Get the safe wTotalLength for VS interface header parsing
@@ -176,7 +177,9 @@ int uvc_desc_parse_format(const uvc_format_desc_t *format_desc)
         break;
     }
     case UVC_VS_DESC_SUBTYPE_FORMAT_MJPEG:
-        ret = UVC_VS_FORMAT_MJPEG;
+        ret = (format_desc->mjpeg.bmFlags & UVC_MJPEG_FORMAT_FLAG_SW_ENCODER)
+            ? UVC_VS_FORMAT_MJPEG_SW
+            : UVC_VS_FORMAT_MJPEG;
         break;
     case UVC_VS_DESC_SUBTYPE_FORMAT_FRAME_BASED: {
         const char *guid = (const char *)(format_desc->uncompressed_frame_based.guidFormat);
@@ -285,7 +288,8 @@ esp_err_t uvc_desc_get_frame_format_by_format(
     while ((current_desc = usb_parse_next_descriptor_of_type(current_desc, safe_wTotalLength, UVC_CS_INTERFACE, &format_offset))) {
         if (uvc_desc_is_format_desc(current_desc)) {
             const uvc_format_desc_t *this_format = (const uvc_format_desc_t *)(current_desc);
-            if (vs_format->format == uvc_desc_parse_format(this_format)) {
+            const int parsed_format = uvc_desc_parse_format(this_format);
+            if (vs_format->format == parsed_format) {
                 if (format_desc_ret) {
                     *format_desc_ret = this_format;
                 }
@@ -591,6 +595,7 @@ esp_err_t uvc_desc_get_frame_list(const usb_config_desc_t *config_desc, uint8_t 
         case UVC_VS_FORMAT_GRAY8:
         case UVC_VS_FORMAT_RGBP:
         case UVC_VS_FORMAT_MJPEG:
+        case UVC_VS_FORMAT_MJPEG_SW:
             frame_info->default_interval = this_frame->mjpeg_uncompressed.dwDefaultFrameInterval;
             frame_info->interval_type = this_frame->mjpeg_uncompressed.bFrameIntervalType;
             if (frame_info->interval_type == 0) {

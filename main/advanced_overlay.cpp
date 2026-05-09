@@ -136,6 +136,38 @@ static bool is_binary_ctrl(const cam_ctrl_desc_t *d)
     return d && d->v_min == 0 && d->v_max == 1;
 }
 
+static bool is_mjpeg_quality_ctrl(const cam_ctrl_desc_t *d)
+{
+    return d
+        && d->entity_id == UVC_ENTITY_ID_EXTENSION_UNIT
+        && (d->selector == UVC_XU_CTRL_MJPEG_HW_QUALITY
+            || d->selector == UVC_XU_CTRL_MJPEG_SW_QUALITY);
+}
+
+static int32_t adv_overlay_next_numeric_value(const cam_ctrl_desc_t *d, int32_t cur, int dir)
+{
+    if (!d) return cur;
+
+    // 仅视频阶段的 CAMERA ADVANCED 对 MJPEG 质量做 5 步进吸附：
+    // 例如 63 -> (+)65 / (-)60，再继续到 70 / 55。
+    // CONFIGURATION 面板仍保持原有 1 步进，不走这里。
+    if (is_mjpeg_quality_ctrl(d)) {
+        int32_t rem = cur % 5;
+        if (rem < 0) rem += 5;
+        if (dir > 0) {
+            return (rem == 0) ? (cur + 5) : (cur + (5 - rem));
+        }
+        if (dir < 0) {
+            return (rem == 0) ? (cur - 5) : (cur - rem);
+        }
+        return cur;
+    }
+
+    if (dir > 0) return cur + 1;
+    if (dir < 0) return cur - 1;
+    return cur;
+}
+
 typedef struct {
     int x;
     int y;
@@ -161,8 +193,13 @@ static adv_rect_t video_rect_logic_for_mode(const app_t *a)
     const cam_mode_t *m = &a->modes[a->selected_mode];
     if (m->w == 0 || m->h == 0) return r;
 
+    // 与 ppa_scale_rotate 保持一致：ADV 开启时预留顶部物理行，视频向底部偏移
+    const int avail_phys_h = (a->adv_live_enabled)
+                              ? (PANEL_PHYS_H - ADV_PHY_PY_RESERVE)
+                              : PANEL_PHYS_H;
+
     float scale_w = (float)PANEL_PHYS_W / (float)m->h;
-    float scale_h = (float)PANEL_PHYS_H / (float)m->w;
+    float scale_h = (float)avail_phys_h  / (float)m->w;
     float scale = (scale_w < scale_h) ? scale_w : scale_h;
     if (scale > 2.0f) scale = 2.0f;
     if (scale < 0.1f) scale = 0.1f;
@@ -171,10 +208,10 @@ static adv_rect_t video_rect_logic_for_mode(const app_t *a)
     int out_h = ((int)((float)m->w * scale + 0.5f)) & ~1;
     if (out_w < 1 || out_h < 1) return r;
     if (out_w > PANEL_PHYS_W) out_w = PANEL_PHYS_W;
-    if (out_h > PANEL_PHYS_H) out_h = PANEL_PHYS_H;
+    if (out_h > avail_phys_h) out_h = avail_phys_h;
 
     int off_x = (PANEL_PHYS_W - out_w) / 2;
-    int off_y = (PANEL_PHYS_H - out_h) / 2;
+    int off_y = (PANEL_PHYS_H - avail_phys_h) + (avail_phys_h - out_h) / 2;
 
     r.x = PANEL_LOGIC_W - off_y - out_h;
     r.y = off_x;
@@ -327,9 +364,9 @@ void adv_overlay_touch_poll(app_t *a)
             adv_rect_t inc = {};
             numeric_button_rects_for_row(x, y, w, h, &dec, &inc);
             if (tx >= dec.x && tx < dec.x + dec.w && ty >= dec.y && ty < dec.y + dec.h) {
-                value = d->v_cur - 1;
+                value = adv_overlay_next_numeric_value(d, d->v_cur, -1);
             } else if (tx >= inc.x && tx < inc.x + inc.w && ty >= inc.y && ty < inc.y + inc.h) {
-                value = d->v_cur + 1;
+                value = adv_overlay_next_numeric_value(d, d->v_cur, +1);
             } else {
                 return;
             }

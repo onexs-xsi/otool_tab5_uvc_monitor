@@ -84,6 +84,7 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
     cam_ctrl_probe_descriptors(a, addr, sidx);
 
     unsigned mjpeg_entries = 0;
+    unsigned mjpeg_sw_entries = 0;
     unsigned yuy2_entries = 0;
     unsigned uyvy_entries = 0;
     unsigned gray8_entries = 0;
@@ -97,6 +98,7 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
         log_frame_info(fi, i);
         switch (fi->format) {
         case UVC_VS_FORMAT_MJPEG: mjpeg_entries++; break;
+        case UVC_VS_FORMAT_MJPEG_SW: mjpeg_sw_entries++; break;
         case UVC_VS_FORMAT_YUY2:  yuy2_entries++; break;
         case UVC_VS_FORMAT_UYVY:  uyvy_entries++; break;
         case UVC_VS_FORMAT_GRAY8: gray8_entries++; break;
@@ -132,9 +134,9 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     if (a->mode_count == 0) {
         ESP_LOGW(TAG,
-                 "No modes found within hw limit %ux%u: MJPEG=%u YUY2=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
+                 "No modes found within hw limit %ux%u: MJPEG(HW)=%u MJPEG(SW)=%u YUY2=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
                  CAM_MAX_SRC_W, CAM_MAX_SRC_H,
-                 mjpeg_entries, yuy2_entries, uyvy_entries, gray8_entries,
+                 mjpeg_entries, mjpeg_sw_entries, yuy2_entries, uyvy_entries, gray8_entries,
                  rgbp_entries, h264_entries, h265_entries, other_entries);
         return;
     }
@@ -175,4 +177,3 @@ void uac_driver_event_cb(uint8_t addr, uint8_t iface_num,
     }
     if (a->events) xEventGroupSetBits(a->events, EV_UAC_CONNECTED);
 }
-

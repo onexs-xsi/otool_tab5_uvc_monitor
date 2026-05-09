@@ -75,10 +75,11 @@ void ui_update_info_panel(app_t *a)
     }
 
     if (a->info_formats_lbl) {
-        unsigned mjpeg = 0, yuy2 = 0, uyvy = 0, gray8 = 0, rgbp = 0, other = 0;
+        unsigned mjpeg = 0, mjpeg_sw = 0, yuy2 = 0, uyvy = 0, gray8 = 0, rgbp = 0, other = 0;
         for (size_t i = 0; i < a->mode_count; i++) {
             switch (a->modes[i].fmt) {
             case UVC_VS_FORMAT_MJPEG: mjpeg++; break;
+            case UVC_VS_FORMAT_MJPEG_SW: mjpeg_sw++; break;
             case UVC_VS_FORMAT_YUY2:  yuy2++; break;
             case UVC_VS_FORMAT_UYVY:  uyvy++; break;
             case UVC_VS_FORMAT_GRAY8: gray8++; break;
@@ -86,17 +87,17 @@ void ui_update_info_panel(app_t *a)
             default:                  other++; break;
             }
         }
-        snprintf(buf, sizeof(buf), "Formats\nMJPEG %u  YUY2 %u\nUYVY %u  GRAY8 %u\nRGBP %u  Other %u",
-                 mjpeg, yuy2, uyvy, gray8, rgbp, other);
+        snprintf(buf, sizeof(buf), "Formats\nMJPEG(HW) %u  MJPEG(SW) %u\nYUY2 %u  UYVY %u\nGRAY8 %u  RGBP %u  Other %u",
+                 mjpeg, mjpeg_sw, yuy2, uyvy, gray8, rgbp, other);
         lv_label_set_text(a->info_formats_lbl, buf);
     }
 
     if (a->info_audio_lbl) {
         const char *audio = "no UAC";
-        if (a->uac_rx_available && a->uac_tx_available) audio = "mic + speaker";
-        else if (a->uac_rx_available) audio = "mic only";
-        else if (a->uac_tx_available) audio = "speaker only";
-        snprintf(buf, sizeof(buf), "Audio\n%s\n%s", audio, a->uac_selected ? "enabled" : "disabled");
+        if (a->uac_rx_available && a->uac_tx_available) audio = "mic+spk";
+        else if (a->uac_rx_available) audio = "mic";
+        else if (a->uac_tx_available) audio = "spk";
+        snprintf(buf, sizeof(buf), "Audio: %s / %s", audio, a->uac_selected ? "on" : "off");
         lv_label_set_text(a->info_audio_lbl, buf);
     }
 }
@@ -776,19 +777,9 @@ static void btn_advanced_cb(lv_event_t *e)
     app_t *a = (app_t *)lv_event_get_user_data(e);
     if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
     if (a->check_running) return;
-    if (!a->adv_caps_probed) {
-        if (a->status_lbl) lv_label_set_text(a->status_lbl,
-            "No UVC advanced descriptor parsed yet");
-        return;
-    }
     int support_cnt = 0;
     for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
         if (a->adv_caps[i].supported) support_cnt++;
-    }
-    if (support_cnt == 0) {
-        if (a->status_lbl) lv_label_set_text(a->status_lbl,
-            "Camera descriptors report no advanced controls");
-        return;
     }
 
     // 已存在则刷新
@@ -834,10 +825,12 @@ static void btn_advanced_cb(lv_event_t *e)
     lv_obj_set_width(a->adv_status_lbl, lv_pct(100));
     lv_obj_set_style_text_color(a->adv_status_lbl, kColMuted, 0);
     lv_obj_set_height(a->adv_status_lbl, 24);
-    if (a->stream_hdl) {
+    if (support_cnt == 0) {
+        lv_label_set_text(a->adv_status_lbl, "No configurable controls detected for this device");
+    } else if (a->stream_hdl) {
         lv_label_set_text(a->adv_status_lbl, "Adjust to send live");
     } else {
-        lv_label_set_text(a->adv_status_lbl, "Stream is closed: changes apply on next START");
+        lv_label_set_text(a->adv_status_lbl, "Changes apply on next START");
     }
 
     for (int i = 0; i < (int)CAM_ADV_CTRL_COUNT; i++) {
@@ -871,13 +864,16 @@ void ui_update_advanced_button(app_t *a)
         if (a->adv_live_enabled) lv_obj_add_state(a->adv_switch, LV_STATE_CHECKED);
         else                     lv_obj_clear_state(a->adv_switch, LV_STATE_CHECKED);
     }
+    bool probed = a->adv_caps_probed;
     if (a->adv_btn) {
-        if (any) lv_obj_clear_state(a->adv_btn, LV_STATE_DISABLED);
-        else     lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
+        if (probed) lv_obj_clear_state(a->adv_btn, LV_STATE_DISABLED);
+        else        lv_obj_add_state(a->adv_btn, LV_STATE_DISABLED);
     }
     if (a->adv_lbl) {
-        if (!any) {
+        if (!probed) {
             lv_label_set_text(a->adv_lbl, "Advanced: unavailable");
+        } else if (!any) {
+            lv_label_set_text(a->adv_lbl, "Advanced: no controls");
         } else if (a->adv_live_enabled) {
             lv_label_set_text(a->adv_lbl, "Advanced: show in video");
         } else {
@@ -1203,9 +1199,9 @@ void ui_build_selection(app_t *a)
     a->info_device_lbl = ui_create_info_label(right_panel, "Device\nwaiting", lv_color_make(0x47, 0x55, 0x69), nullptr);
     lv_obj_set_height(a->info_device_lbl, 56);
     a->info_formats_lbl = ui_create_info_label(right_panel, "Formats\nwaiting", lv_color_make(0x47, 0x55, 0x69), nullptr);
-    lv_obj_set_height(a->info_formats_lbl, 56);
-    a->info_audio_lbl = ui_create_info_label(right_panel, "Audio\nno UAC", lv_color_make(0x47, 0x55, 0x69), nullptr);
-    lv_obj_set_height(a->info_audio_lbl, 50);
+    lv_obj_set_height(a->info_formats_lbl, 80);
+    a->info_audio_lbl = ui_create_info_label(right_panel, "Audio: no UAC / off", lv_color_make(0x47, 0x55, 0x69), nullptr);
+    lv_obj_set_height(a->info_audio_lbl, 26);
 
     lv_obj_t *uac_row = lv_obj_create(right_panel);
     lv_obj_set_width(uac_row, lv_pct(100));

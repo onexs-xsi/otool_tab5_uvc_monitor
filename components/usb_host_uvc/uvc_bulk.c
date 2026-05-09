@@ -111,7 +111,8 @@ label_sof:
         }
 
         // Check mjpeg frame start
-        if (uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG &&
+        if ((uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG
+                || uvc_stream->dynamic.vs_format.format == UVC_VS_FORMAT_MJPEG_SW) &&
                 (payload_data[0] != JPEG_MARKER || payload_data[1] != JPEG_SOI)) {
             // We received frame with invalid frame, skip this frame
             uvc_stream->single_thread.skip_current_frame = true;

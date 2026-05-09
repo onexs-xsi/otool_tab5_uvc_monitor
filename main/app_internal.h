@@ -54,6 +54,11 @@
 #define PANEL_BUF_SIZE      ((size_t)PANEL_PHYS_W * PANEL_PHYS_H * 2)
 #define PANEL_DIRTY_RECT_MAX 8
 
+// ADV 叠加面板（宽 380px）+ 右侧留白（14px）= 394px 逻辑 x 预留区，
+// 对应物理坐标系顶部 ADV_PHY_PY_RESERVE 行（phys_py 0..393）。
+// 开启 adv_live_enabled 时视频缩放区域限制为剩余物理行（394..1279）。
+#define ADV_PHY_PY_RESERVE  394
+
 #define CAM_MAX_CANDIDATES  64
 #define CAM_FRAME_CNT       6
 #define CAM_QUEUE_DEPTH     1
@@ -100,8 +105,9 @@
 #define UVC_XU_CTRL_VFLIP              2     // int32_t, 4 字节, [0,1]
 #define UVC_XU_CTRL_SPECIAL_EFFECT     3     // int32_t, 4 字节, [0,6]
 #define UVC_XU_CTRL_AE_LEVEL           4     // int32_t, 4 字节, [-5,5]
-#define UVC_XU_CTRL_JPEG_QUALITY       5     // int32_t, 4 字节, [1,63]
+#define UVC_XU_CTRL_MJPEG_HW_QUALITY   5     // int32_t, 4 字节, [1,63]
 #define UVC_XU_CTRL_WB_MODE            6     // int32_t, 4 字节, [0,4]
+#define UVC_XU_CTRL_MJPEG_SW_QUALITY    7     // int32_t, 4 字节, [1,100]
 
 // 标准 UVC class-specific request codes
 #define UVC_REQ_SET_CUR     0x01
@@ -114,7 +120,7 @@
 #define UVC_REQ_GET_DEF     0x87
 
 // adv_caps 数组中可枚举的控件总数
-#define CAM_ADV_CTRL_COUNT  8
+#define CAM_ADV_CTRL_COUNT  9
 
 // 事件位
 #define EV_DEV_CONNECTED    (1 << 0)
