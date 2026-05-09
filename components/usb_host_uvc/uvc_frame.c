@@ -173,6 +173,13 @@ bool uvc_frame_payload_header_validate(const uvc_payload_header_t *hdr, size_t p
         return false;
     }
 
+#if CONFIG_UVC_CHECK_PAYLOAD_HEADER_EOH
+    // 按 UVC 规范校验 EOH 位，避免把截断 header 当作有效负载。
+    if (!hdr->bmHeaderInfo.end_of_header) {
+        return false;
+    }
+#endif // CONFIG_UVC_CHECK_PAYLOAD_HEADER_EOH
+
     size_t min_len = sizeof(uvc_payload_header_t);
     if (hdr->bmHeaderInfo.presentation_time) {
         min_len += 4;

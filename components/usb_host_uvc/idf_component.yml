@@ -11,9 +11,9 @@ files:
   exclude:
   - test_app
   - host_test
-repository: git://github.com/espressif/esp-usb.git
+repository: https://github.com/espressif/esp-usb.git
 repository_info:
-  commit_sha: 27565ee79bbe0da992964cbddf33b2a2416def67
+  commit_sha: 606635bce0799165ad35fcd712fe6e891b385ed7
   path: host/class/uvc/usb_host_uvc
 targets:
 - esp32s2

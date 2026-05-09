@@ -1,10 +1,13 @@
+## IDF Component Manager Manifest File
 dependencies:
-  espressif/esp_jpeg: ^1.2
-  espressif/esp_lcd_ra8875: ^1.0.1
-  espressif/usb:
-    rules:
-    - if: idf_version >=5.4
-    version: '*'
+  idf: ">=5.3"
+  espressif/esp_lcd_ra8875: "^1.0.1"
+  espressif/esp_jpeg: "^1.2"
   espressif/usb_host_uvc:
-    version: '*'
-  idf: '>=5.3'
+    version: "*"
+    override_path: "../../../../usb_host_uvc"
+  espressif/usb:
+    version: "*"
+    override_path: "../../../../../../usb"
+    rules:
+      - if: "idf_version >=5.4"                 # Use managed component only for 5.4 and above

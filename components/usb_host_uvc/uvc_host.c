@@ -402,7 +402,7 @@ static void uvc_transfers_free(uvc_stream_t *uvc_stream)
  *
  * @param[in] uvc_stream       Pointer to UVC stream
  * @param[in] num_of_transfers Number of USB transfers allocated for this stream
- * @param[in] transfer_size    Size of 1 USB transfer in bytes
+ * @param[in] transfer_size    单个 USB transfer 字节数；为 0 时默认使用 4x MPS。
  * @param[in] ep_desc          Descriptor of the streaming endpoint
  * @return
  *     - ESP_OK:              Success
@@ -421,6 +421,14 @@ static esp_err_t uvc_transfers_allocate(uvc_stream_t *uvc_stream, unsigned num_o
     if (is_isoc) {
         // Multiply MPS by number of transactions in microframe: This is the minimum size we can request in IN transfer
         max_packet_size *= (USB_EP_DESC_GET_MULT(ep_desc) + 1);
+    }
+
+    if (transfer_size == 0) {
+        // 调用方未指定 URB 大小时，使用 4x MPS 作为默认值。
+        transfer_size = 4 * max_packet_size;
+    }
+
+    if (is_isoc) {
         // Divide the transfer data buffer into ISOC packets
         num_isoc_packets = usb_round_up_to_mps(transfer_size, max_packet_size) / max_packet_size;
     }

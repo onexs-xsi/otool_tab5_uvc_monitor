@@ -1243,7 +1243,7 @@ void ui_build_selection(app_t *a)
     // ADVANCED：开关决定视频阶段是否常驻显示右侧参数侧栏；Configuration 用于进入前调整。
     a->adv_container = lv_obj_create(right_panel);
     lv_obj_set_width(a->adv_container, lv_pct(100));
-    lv_obj_set_height(a->adv_container, 126);
+    lv_obj_set_height(a->adv_container, 154);
     lv_obj_set_style_bg_color(a->adv_container, lv_color_make(0xF8, 0xFA, 0xFC), 0);
     lv_obj_set_style_bg_opa(a->adv_container, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(a->adv_container, 1, 0);
@@ -1286,6 +1286,13 @@ void ui_build_selection(app_t *a)
     lv_obj_clear_flag(adv_switch_hit, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_flag(adv_switch_hit, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(adv_switch_hit, adv_option_click_cb, LV_EVENT_CLICKED, a);
+
+    lv_obj_t *adv_scope_lbl = lv_label_create(a->adv_container);
+    lv_obj_set_width(adv_scope_lbl, right_w - 40);
+    lv_label_set_long_mode(adv_scope_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(adv_scope_lbl, lv_color_make(0xB4, 0x53, 0x09), 0);
+    lv_obj_align(adv_scope_lbl, LV_ALIGN_TOP_LEFT, 0, 50);
+    lv_label_set_text(adv_scope_lbl, "Custom UVC firmware only.\nStandard cameras unsupported.");
 
     a->adv_btn = lv_button_create(a->adv_container);
     lv_obj_set_width(a->adv_btn, lv_pct(100));
