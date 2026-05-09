@@ -36,6 +36,9 @@ enum class usb5v_power_reason_t {
     user_reinit_enable,
 };
 
+static const TickType_t kUiUsbPollTicks = pdMS_TO_TICKS(200);
+static const size_t kUsbAddrScanMax = 16;
+
 static esp_err_t usb5v_set_allowed(usb5v_power_reason_t reason)
 {
     bool enable = true;
@@ -57,6 +60,113 @@ static esp_err_t usb5v_set_allowed(usb5v_power_reason_t reason)
 
     ESP_LOGI(TAG, "USB5V %s (%s)", enable ? "ON" : "OFF", reason_name);
     return s_comp.usb5v_enable(enable);
+}
+
+static bool usb_addr_present(uint8_t dev_addr)
+{
+    if (dev_addr == 0) return false;
+
+    uint8_t dev_addr_list[kUsbAddrScanMax] = {};
+    int actual_count = 0;
+    esp_err_t err = usb_host_device_addr_list_fill(sizeof(dev_addr_list), dev_addr_list, &actual_count);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "usb addr scan failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    if (actual_count < 0) actual_count = 0;
+    if (actual_count > (int)kUsbAddrScanMax) actual_count = (int)kUsbAddrScanMax;
+    for (int i = 0; i < actual_count; ++i) {
+        if (dev_addr_list[i] == dev_addr) return true;
+    }
+    return false;
+}
+
+static void app_reset_connected_device_state(app_t *a)
+{
+    if (!a) return;
+
+    const uint8_t lost_addr = a->dev_addr;
+    if (a->uac_addr == lost_addr) {
+        a->uac_rx_available = false;
+        a->uac_addr = 0;
+        a->uac_iface_num = 0;
+    }
+    if (a->uac_tx_addr == lost_addr) {
+        a->uac_tx_available = false;
+        a->uac_tx_addr = 0;
+        a->uac_tx_iface_num = 0;
+        a->uac_tx_start_attempted = false;
+    }
+
+    a->mode_count = 0;
+    a->selected_mode = 0;
+    a->dev_addr = 0;
+    a->stream_idx = 0;
+    a->uac_selected = false;
+    a->adv_live_enabled = false;
+    a->adv_touch_down = false;
+    a->stream_lvgl_ui = false;
+    cam_ctrl_init_table(a);
+}
+
+static void app_refresh_connected_selection_ui(app_t *a, const char *status_text)
+{
+    if (!a) return;
+    if (!otool_lvgl_port_lock(0)) return;
+
+    ui_populate_mode_list(a);
+    if (a->status_lbl) {
+        const char *text = status_text;
+        if (!text) {
+            text = (a->mode_count > 0) ?
+                       "Select mode and press START" :
+                       "Camera connected, no compatible modes";
+        }
+        lv_label_set_text(a->status_lbl, text);
+    }
+    ui_update_uac_option(a);
+    if (a->confirm_btn) {
+        if (a->mode_count > 0 && !a->check_running)
+            lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
+        else
+            lv_obj_add_state(a->confirm_btn, LV_STATE_DISABLED);
+    }
+    if (a->check_btn) {
+        if (a->mode_count > 0 && !a->check_running)
+            lv_obj_clear_state(a->check_btn, LV_STATE_DISABLED);
+        else
+            lv_obj_add_state(a->check_btn, LV_STATE_DISABLED);
+    }
+    ui_update_info_panel(a);
+    ui_update_advanced_button(a);
+    otool_lvgl_port_unlock();
+}
+
+static void app_refresh_waiting_selection_ui(app_t *a, const char *status_text)
+{
+    if (!a) return;
+    if (!otool_lvgl_port_lock(50)) return;
+
+    ui_clear_mode_list(a);
+    if (a->status_lbl) {
+        lv_label_set_text(a->status_lbl, status_text ? status_text : "Waiting for USB camera...");
+    }
+    ui_update_uac_option(a);
+    if (a->confirm_btn)
+        lv_obj_add_state(a->confirm_btn, LV_STATE_DISABLED);
+    if (a->check_btn)
+        lv_obj_add_state(a->check_btn, LV_STATE_DISABLED);
+    ui_update_info_panel(a);
+    ui_update_advanced_button(a);
+    otool_lvgl_port_unlock();
+}
+
+static void app_handle_selecting_device_lost(app_t *a, const char *status_text)
+{
+    if (!a) return;
+    app_reset_connected_device_state(a);
+    app_refresh_waiting_selection_ui(a, status_text ? status_text : "Camera disconnected, waiting...");
 }
 
 static void usb_reinit_task(void *arg)
@@ -267,37 +377,19 @@ extern "C" void app_main(void)
                             pdTRUE, pdFALSE, portMAX_DELAY);
         s_app.state = APP_STATE_SELECTING;
 
-        if (otool_lvgl_port_lock(0)) {
-            ui_populate_mode_list(&s_app);
-            if (s_app.status_lbl)
-                lv_label_set_text(s_app.status_lbl,
-                    true ?
-                    "Select mode and press START" :
-                    "Only lower-resolution modes are enabled");
-            ui_update_uac_option(&s_app);
-            if (s_app.confirm_btn) {
-                if (true)
-                    lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
-                else
-                    lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
-            }
-            if (s_app.check_btn) {
-                if (s_app.mode_count > 0 && !s_app.check_running)
-                    lv_obj_clear_state(s_app.check_btn, LV_STATE_DISABLED);
-                else
-                    lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
-            }
-            ui_update_info_panel(&s_app);
-            ui_update_advanced_button(&s_app);
-            otool_lvgl_port_unlock();
-        }
+        app_refresh_connected_selection_ui(&s_app, nullptr);
 
         // 等待用户确认、设备断开、热插拔重连，或稍后检测到 UAC。
         while (true) {
             EventBits_t bits = xEventGroupWaitBits(s_app.events,
                                                    EV_USER_CONFIRMED | EV_DEV_LOST | EV_DEV_CONNECTED |
                                                        EV_UAC_CONNECTED | EV_REINIT_REQUESTED,
-                                                   pdTRUE, pdFALSE, portMAX_DELAY);
+                                                   pdTRUE, pdFALSE, kUiUsbPollTicks);
+            if ((bits & (EV_DEV_LOST | EV_DEV_CONNECTED)) == 0 && s_app.dev_addr != 0 &&
+                !usb_addr_present(s_app.dev_addr) &&
+                (xEventGroupGetBits(s_app.events) & EV_DEV_CONNECTED) == 0) {
+                bits |= EV_DEV_LOST;
+            }
             if (bits & EV_REINIT_REQUESTED) {
                 ESP_LOGI(TAG, "REINIT request observed in selecting state");
             }
@@ -309,53 +401,13 @@ extern "C" void app_main(void)
             }
             if (bits & EV_DEV_LOST) {
                 ESP_LOGW(TAG, "Device lost before confirm");
-                ui_set_status(&s_app, "Camera disconnected, waiting...");
-                // 先清零设备信息，ui_update_info_panel 才能显示空内容
-                s_app.mode_count = 0;
-                s_app.selected_mode = 0;
-                s_app.dev_addr = 0;
-                s_app.stream_idx = 0;
-                s_app.adv_touch_down = false;
-                if (otool_lvgl_port_lock(50)) {
-                    if (s_app.confirm_btn)
-                        lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
-                    if (s_app.check_btn)
-                        lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
-                    if (s_app.adv_btn)
-                        lv_obj_add_state(s_app.adv_btn, LV_STATE_DISABLED);
-                    if (s_app.adv_switch)
-                        lv_obj_add_state(s_app.adv_switch, LV_STATE_DISABLED);
-                    ui_clear_mode_list(&s_app);
-                    ui_update_info_panel(&s_app);
-                    ui_update_advanced_button(&s_app);
-                    otool_lvgl_port_unlock();
-                }
+                app_handle_selecting_device_lost(&s_app, "Camera disconnected, waiting...");
                 continue;
             }
             if (bits & EV_DEV_CONNECTED) {
                 // 热插拔：摄像头重新上电后会以新地址枚举，这里刷新选择面板。
                 ESP_LOGI(TAG, "Hot-plug: device reconnected, refreshing mode list");
-                if (otool_lvgl_port_lock(0)) {
-                    ui_populate_mode_list(&s_app);
-                    if (s_app.status_lbl)
-                        lv_label_set_text(s_app.status_lbl, "Select mode and press START");
-                    ui_update_uac_option(&s_app);
-                    if (s_app.confirm_btn) {
-                        if (s_app.mode_count > 0)
-                            lv_obj_clear_state(s_app.confirm_btn, LV_STATE_DISABLED);
-                        else
-                            lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
-                    }
-                    if (s_app.check_btn) {
-                        if (s_app.mode_count > 0 && !s_app.check_running)
-                            lv_obj_clear_state(s_app.check_btn, LV_STATE_DISABLED);
-                        else
-                            lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
-                    }
-                    ui_update_info_panel(&s_app);
-                    ui_update_advanced_button(&s_app);
-                    otool_lvgl_port_unlock();
-                }
+                app_refresh_connected_selection_ui(&s_app, "Select mode and press START");
                 continue;
             }
             if (bits & EV_USER_CONFIRMED) {
@@ -433,26 +485,23 @@ extern "C" void app_main(void)
         otool_lvgl_port_resume();
         s_app.state = APP_STATE_WAITING_USB;
 
-        if (otool_lvgl_port_lock(50)) {
-            ui_clear_mode_list(&s_app);
-            if (s_app.status_lbl)
-                lv_label_set_text(s_app.status_lbl, "Camera lost. Waiting for USB camera...");
-            ui_update_uac_option(&s_app);
-            if (s_app.confirm_btn)
-                lv_obj_add_state(s_app.confirm_btn, LV_STATE_DISABLED);
-            if (s_app.check_btn)
-                lv_obj_add_state(s_app.check_btn, LV_STATE_DISABLED);
-            ui_update_info_panel(&s_app);
-            ui_update_advanced_button(&s_app);
-            otool_lvgl_port_unlock();
+        EventBits_t pending_bits = xEventGroupGetBits(s_app.events);
+        bool dev_reconnected = (pending_bits & EV_DEV_CONNECTED) != 0;
+
+        if (!dev_reconnected) {
+            app_reset_connected_device_state(&s_app);
         }
-        s_app.mode_count = 0;
-        s_app.selected_mode = 0;
         s_app.uac_selected = false;
         s_app.adv_live_enabled = false;
         s_app.adv_touch_down = false;
         s_app.stream_lvgl_ui = false;
-        xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
+        app_refresh_waiting_selection_ui(
+            &s_app,
+            dev_reconnected ? "Camera reconnected, refreshing..." : "Camera lost. Waiting for USB camera...");
+        xEventGroupClearBits(s_app.events,
+                             dev_reconnected ?
+                                 (EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED) :
+                                 (EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED));
     }
     // unreachable
 }
