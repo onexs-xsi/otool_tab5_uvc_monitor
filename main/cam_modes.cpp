@@ -124,3 +124,64 @@ int default_mode_index(const app_t *a)
     return 0;
 }
 
+static int factory_format_priority(enum uvc_host_stream_format fmt)
+{
+    switch (fmt) {
+    case UVC_VS_FORMAT_MJPEG:
+    case UVC_VS_FORMAT_MJPEG_SW:
+        return 0;
+    case UVC_VS_FORMAT_YUY2:
+        return 1;
+    case UVC_VS_FORMAT_UYVY:
+    case UVC_VS_FORMAT_RGBP:
+        return 2;
+    default:
+        return -1;
+    }
+}
+
+static uint64_t mode_pixel_count(const cam_mode_t *m)
+{
+    return m ? ((uint64_t)m->w * (uint64_t)m->h) : 0;
+}
+
+static bool factory_mode_better(const cam_mode_t *candidate, const cam_mode_t *best)
+{
+    const int candidate_priority = factory_format_priority(candidate->fmt);
+    if (candidate_priority < 0) return false;
+    if (!best) return true;
+
+    const int best_priority = factory_format_priority(best->fmt);
+    if (candidate_priority != best_priority) return candidate_priority < best_priority;
+
+    const uint64_t candidate_pixels = mode_pixel_count(candidate);
+    const uint64_t best_pixels = mode_pixel_count(best);
+    if (candidate_pixels != best_pixels) return candidate_pixels > best_pixels;
+
+    const unsigned candidate_long_edge = (candidate->w > candidate->h) ? candidate->w : candidate->h;
+    const unsigned best_long_edge = (best->w > best->h) ? best->w : best->h;
+    if (candidate_long_edge != best_long_edge) return candidate_long_edge > best_long_edge;
+
+    const uint32_t candidate_fps = fps_x10(candidate->fps);
+    const uint32_t best_fps = fps_x10(best->fps);
+    return candidate_fps > best_fps;
+}
+
+int factory_simple_mode_index(const app_t *a)
+{
+    if (!a) return -1;
+
+    int best_index = -1;
+    const cam_mode_t *best = nullptr;
+    for (size_t i = 0; i < a->mode_count; i++) {
+        const cam_mode_t *m = &a->modes[i];
+        // 产线简洁模式只自动选择可显示的彩色格式。
+        // GRAY8 是黑白，H264/H265 当前显示链路不可解码，因此不作为自动候选。
+        if (factory_mode_better(m, best)) {
+            best = m;
+            best_index = (int)i;
+        }
+    }
+    return best_index;
+}
+

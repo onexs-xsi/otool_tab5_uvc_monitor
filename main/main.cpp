@@ -20,6 +20,12 @@
 
 #include <atomic>
 
+// 产线简洁模式：1=自动等待摄像头、自动选模并播放，断开后继续等待下一次接入。
+// 如需恢复原手动选择 UI，可在此改为 0，或在编译参数中覆盖同名宏。
+#ifndef TAB5_FACTORY_SIMPLE_MODE
+#define TAB5_FACTORY_SIMPLE_MODE 1
+#endif
+
 #include "app_internal.h"
 
 #include "M5Autodetect.h"
@@ -119,6 +125,7 @@ static void app_reset_connected_device_state(app_t *a)
     cam_ctrl_init_table(a);
 }
 
+#if !TAB5_FACTORY_SIMPLE_MODE
 static void app_refresh_connected_selection_ui(app_t *a, const char *status_text)
 {
     if (!a) return;
@@ -177,6 +184,7 @@ static void app_handle_selecting_device_lost(app_t *a, const char *status_text)
     app_reset_connected_device_state(a);
     app_refresh_waiting_selection_ui(a, status_text ? status_text : "Camera disconnected, waiting...");
 }
+#endif
 
 static void usb_reinit_task(void *arg)
 {
@@ -221,6 +229,40 @@ void app_request_usb_reinit_from_user(app_t *a)
         ui_set_status(a, "REINIT task create failed");
     }
 }
+
+#if TAB5_FACTORY_SIMPLE_MODE
+static int app_select_factory_simple_mode(app_t *a)
+{
+    if (!a || a->mode_count == 0) return -1;
+
+    const int mode_idx = factory_simple_mode_index(a);
+    if (mode_idx < 0) {
+        ESP_LOGW(TAG, "Factory mode: no supported color stream mode");
+        return -1;
+    }
+
+    a->selected_mode = mode_idx;
+    const cam_mode_t *m = &a->modes[mode_idx];
+    ESP_LOGI(TAG, "Factory mode selected: index=%d %s %ux%u @%.1f fps",
+             mode_idx, uvc_format_name(m->fmt), m->w, m->h, m->fps);
+    return mode_idx;
+}
+
+static void app_wait_factory_device_removed(app_t *a, const char *status_text)
+{
+    if (!a) return;
+    factory_ui_set_waiting_status(a, status_text ? status_text : "Waiting for USB camera");
+    factory_ui_set_mode_info(a);
+    while (a->dev_addr != 0 && usb_addr_present(a->dev_addr)) {
+        EventBits_t bits = xEventGroupWaitBits(a->events, EV_DEV_LOST,
+                                               pdTRUE, pdFALSE, kUiUsbPollTicks);
+        if (bits & EV_DEV_LOST) break;
+    }
+    app_reset_connected_device_state(a);
+    factory_ui_set_waiting_status(a, "Waiting for USB camera");
+    factory_ui_set_waiting_info(a, "Camera: waiting");
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // app_main
@@ -369,15 +411,143 @@ extern "C" void app_main(void)
     }
 
     // ------------------------------------------------------------------
-    // 6. 构建选择 UI（首屏始终显示）
+    // 6. 构建首屏 UI
     // ------------------------------------------------------------------
+#if TAB5_FACTORY_SIMPLE_MODE
+    s_app.factory_simple_mode_active = true;
+    factory_ui_build_waiting(&s_app);
+#else
+    s_app.factory_simple_mode_active = false;
     ui_build_selection(&s_app);
+#endif
     s_app.state = APP_STATE_WAITING_USB;
     ESP_LOGI(TAG, "Init done, waiting for UVC camera...");
 
     // ------------------------------------------------------------------
     // 主循环：app_main 任务内的状态机
     // ------------------------------------------------------------------
+#if TAB5_FACTORY_SIMPLE_MODE
+    ESP_LOGI(TAG, "Factory simple mode enabled");
+    while (true) {
+        // --- Phase A: 等待设备并自动选模 ---
+        s_app.state = APP_STATE_WAITING_USB;
+        factory_ui_set_waiting_status(&s_app, "Waiting for USB camera");
+        factory_ui_set_waiting_info(&s_app, "Camera: waiting");
+
+        xEventGroupWaitBits(s_app.events, EV_DEV_CONNECTED,
+                            pdTRUE, pdFALSE, portMAX_DELAY);
+        s_app.state = APP_STATE_SELECTING;
+        factory_ui_set_waiting_status(&s_app, "Camera connected, opening video");
+        factory_ui_set_mode_info(&s_app);
+
+        if ((xEventGroupGetBits(s_app.events) & EV_DEV_LOST) ||
+            (s_app.dev_addr != 0 && !usb_addr_present(s_app.dev_addr))) {
+            ESP_LOGW(TAG, "Factory mode: device lost before auto start");
+            app_reset_connected_device_state(&s_app);
+            factory_ui_set_waiting_status(&s_app, "Waiting for USB camera");
+            factory_ui_set_waiting_info(&s_app, "Camera: waiting");
+            xEventGroupClearBits(s_app.events,
+                                 EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
+            continue;
+        }
+
+        if (app_select_factory_simple_mode(&s_app) < 0) {
+            app_wait_factory_device_removed(&s_app,
+                                            "Factory mode: no supported color mode; replug camera");
+            xEventGroupClearBits(s_app.events,
+                                 EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
+            continue;
+        }
+
+        s_app.uac_selected = false;
+        s_app.adv_live_enabled = false;
+        s_app.adv_touch_down = false;
+        s_app.stream_lvgl_ui = false;
+        factory_ui_set_waiting_status(&s_app, "Starting video");
+        factory_ui_set_mode_info(&s_app);
+
+        // --- Phase B: 视频流 ---
+        s_app.state = APP_STATE_STREAMING;
+        otool_lvgl_port_stop();
+
+        ESP_LOGI(TAG, "Free SPIRAM before open: %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+        if (!alloc_stream_resources(&s_app)) {
+            ESP_LOGE(TAG, "Factory mode: failed to alloc stream buffers");
+            s_app.state = APP_STATE_SELECTING;
+            otool_lvgl_port_resume();
+            app_wait_factory_device_removed(&s_app,
+                                            "Factory mode: buffer alloc failed; replug camera");
+            xEventGroupClearBits(s_app.events,
+                                 EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
+            continue;
+        }
+
+        panel_clear(&s_app);
+        s_app.stream_restart_requested = false;
+        s_app.uvc_frame_size_override = 0;
+        s_app.stream_restart_count = 0;
+
+        if (!open_stream(&s_app, s_app.selected_mode)) {
+            ESP_LOGE(TAG, "Factory mode: failed to open stream");
+            free_stream_resources(&s_app);
+            s_app.state = APP_STATE_SELECTING;
+            otool_lvgl_port_resume();
+            app_wait_factory_device_removed(&s_app,
+                                            "Factory mode: stream open failed; replug camera");
+            xEventGroupClearBits(s_app.events,
+                                 EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED);
+            continue;
+        }
+
+        xEventGroupClearBits(s_app.events, EV_DEV_LOST | EV_DEV_CONNECTED);
+
+        video_loop(&s_app);
+
+        // --- Phase C: 设备断开后回到等待 ---
+        ESP_LOGI(TAG, "Factory mode: stream ended, waiting for next camera");
+
+        stop_uac_stream(&s_app);
+
+        if (s_app.stream_hdl) {
+            uvc_host_stream_stop(s_app.stream_hdl);
+            drain_queue(&s_app);
+            uvc_host_stream_close(s_app.stream_hdl);
+            s_app.stream_hdl = nullptr;
+        } else {
+            drain_queue(&s_app);
+        }
+
+        free_stream_resources(&s_app);
+
+        ui_destroy_stream_overlay(&s_app);
+        otool_lvgl_port_resume();
+        s_app.state = APP_STATE_WAITING_USB;
+
+        EventBits_t pending_bits = xEventGroupGetBits(s_app.events);
+        bool dev_reconnected = (pending_bits & EV_DEV_CONNECTED) != 0;
+
+        if (!dev_reconnected) {
+            app_reset_connected_device_state(&s_app);
+        }
+        s_app.uac_selected = false;
+        s_app.adv_live_enabled = false;
+        s_app.adv_touch_down = false;
+        s_app.stream_lvgl_ui = false;
+        factory_ui_set_waiting_status(
+            &s_app,
+            dev_reconnected ? "Camera reconnected, opening video" : "Waiting for USB camera");
+        if (dev_reconnected) {
+            factory_ui_set_mode_info(&s_app);
+        } else {
+            factory_ui_set_waiting_info(&s_app, "Camera: waiting");
+        }
+        xEventGroupClearBits(s_app.events,
+                             dev_reconnected ?
+                                 (EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED) :
+                                 (EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED));
+    }
+#else
     while (true) {
         // --- Phase A: 等待设备与用户确认 ---
         s_app.state = APP_STATE_WAITING_USB;
@@ -547,5 +717,6 @@ extern "C" void app_main(void)
                                  (EV_DEV_LOST | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED) :
                                  (EV_DEV_LOST | EV_DEV_CONNECTED | EV_USER_CONFIRMED | EV_UAC_CONNECTED | EV_REINIT_REQUESTED));
     }
+#endif
     // unreachable
 }

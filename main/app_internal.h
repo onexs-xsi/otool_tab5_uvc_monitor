@@ -37,6 +37,12 @@
 #include "esp_lcd_touch.h"
 #include "lvgl.h"
 
+// 产线简洁模式：1=自动等待摄像头、自动选模并播放，断开后继续等待下一次接入。
+// 如需恢复原手动选择 UI，可在 main.cpp 改为 0，或在编译参数中覆盖同名宏。
+#ifndef TAB5_FACTORY_SIMPLE_MODE
+#define TAB5_FACTORY_SIMPLE_MODE 1
+#endif
+
 // ---------------------------------------------------------------------------
 // 常量
 // ---------------------------------------------------------------------------
@@ -189,6 +195,7 @@ typedef struct {
 typedef struct {
     // 状态
     volatile app_state_t    state;
+    bool                    factory_simple_mode_active;
     EventGroupHandle_t      events;
 
     // UVC 设备信息
@@ -326,6 +333,7 @@ bool mode_is_selectable(const cam_mode_t *m);
 void add_mode(app_t *a, unsigned w, unsigned h,
               float fps, enum uvc_host_stream_format fmt);
 int  default_mode_index(const app_t *a);
+int  factory_simple_mode_index(const app_t *a);
 
 // display_pipeline.cpp
 esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
@@ -389,6 +397,13 @@ void ui_update_advanced_button(app_t *a);
 void ui_build_stream_overlay(app_t *a);
 void ui_refresh_stream_overlay(app_t *a);
 void ui_destroy_stream_overlay(app_t *a);
+
+// factory_overlay.cpp
+void factory_ui_build_waiting(app_t *a);
+void factory_ui_set_waiting_status(app_t *a, const char *status_base);
+void factory_ui_set_waiting_info(app_t *a, const char *info);
+void factory_ui_set_mode_info(app_t *a);
+void draw_factory_video_overlay(app_t *a);
 
 // stream_setup.cpp
 bool alloc_stream_resources(app_t *a);

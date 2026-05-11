@@ -22,6 +22,7 @@ static void render_overlays_and_blit(app_t *a)
         adv_overlay_touch_poll(a);
         draw_adv_overlay(a);
     }
+    draw_factory_video_overlay(a);
     panel_blit(a);
 }
 
@@ -213,6 +214,9 @@ void video_loop(app_t *a)
 
     a->decoded_frames = 0;
     a->fps_report_ms  = (uint32_t)esp_log_timestamp();
+    a->display_fps = 0;
+    uint32_t overlay_fps_ms = a->fps_report_ms;
+    uint32_t overlay_frames = 0;
     uint32_t timeout_count = 0;
     uint32_t empty_frame_count = 0;
     uint64_t stat_wait_us = 0;
@@ -232,6 +236,9 @@ void video_loop(app_t *a)
             src_h = m->h;
             a->decoded_frames = 0;
             a->fps_report_ms  = (uint32_t)esp_log_timestamp();
+            a->display_fps = 0;
+            overlay_fps_ms = a->fps_report_ms;
+            overlay_frames = 0;
             timeout_count = 0;
             empty_frame_count = 0;
             stat_wait_us = 0;
@@ -489,12 +496,19 @@ void video_loop(app_t *a)
         stat_blit_us += frame_blit_us;
         stat_total_us += (uint64_t)(esp_timer_get_time() - frame_loop_start_us);
         uint32_t now = (uint32_t)esp_log_timestamp();
+        overlay_frames++;
+        if (now - overlay_fps_ms >= 1000) {
+            const uint32_t elapsed_ms = now - overlay_fps_ms;
+            const float fps = elapsed_ms > 0 ? ((float)overlay_frames * 1000.0f / (float)elapsed_ms) : 0.0f;
+            a->display_fps = (uint32_t)(fps + 0.5f);
+            overlay_frames = 0;
+            overlay_fps_ms = now;
+        }
         if (now - a->fps_report_ms >= CAM_FPS_REPORT_INTERVAL_MS) {
             const uint32_t elapsed_ms = now - a->fps_report_ms;
             const uint32_t frames = a->decoded_frames;
             const float fps = elapsed_ms > 0 ? ((float)frames * 1000.0f / (float)elapsed_ms) : 0.0f;
             const float denom = frames > 0 ? (float)frames : 1.0f;
-            a->display_fps = (uint32_t)(fps + 0.5f);
             ESP_LOGI(TAG,
                      "display stats: %.2f fps frames=%u/%ums avg_ms wait=%.2f decode=%.2f convert=%.2f ppa=%.2f blit=%.2f total=%.2f mode=%s %ux%u",
                      fps,

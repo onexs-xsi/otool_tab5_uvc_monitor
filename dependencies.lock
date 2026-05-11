@@ -64,7 +64,7 @@ dependencies:
   otool_lvgl_idf_port:
     dependencies: []
     source:
-      path: D:\work\m5_project\P396_PoeP4_HDMI_IN\otool_tab5_uvc_monitor\components\otool_lvgl_idf_port
+      path: components\otool_lvgl_idf_port
       type: local
     version: 1.0.0
 direct_dependencies:
@@ -77,4 +77,4 @@ direct_dependencies:
 - otool_lvgl_idf_port
 manifest_hash: 72330774668a670860a60cbad231929ea1ab0c4250ad77ae2e0ca532fcb51136
 target: esp32p4
-version: 2.0.0
+version: 3.0.0
