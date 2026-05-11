@@ -214,7 +214,7 @@ void video_loop(app_t *a)
 
     a->decoded_frames = 0;
     a->fps_report_ms  = (uint32_t)esp_log_timestamp();
-    a->display_fps = 0;
+    a->display_fps = 0.0f;
     uint32_t overlay_fps_ms = a->fps_report_ms;
     uint32_t overlay_frames = 0;
     uint32_t timeout_count = 0;
@@ -236,7 +236,7 @@ void video_loop(app_t *a)
             src_h = m->h;
             a->decoded_frames = 0;
             a->fps_report_ms  = (uint32_t)esp_log_timestamp();
-            a->display_fps = 0;
+            a->display_fps = 0.0f;
             overlay_fps_ms = a->fps_report_ms;
             overlay_frames = 0;
             timeout_count = 0;
@@ -500,7 +500,7 @@ void video_loop(app_t *a)
         if (now - overlay_fps_ms >= 1000) {
             const uint32_t elapsed_ms = now - overlay_fps_ms;
             const float fps = elapsed_ms > 0 ? ((float)overlay_frames * 1000.0f / (float)elapsed_ms) : 0.0f;
-            a->display_fps = (uint32_t)(fps + 0.5f);
+            a->display_fps = fps;
             overlay_frames = 0;
             overlay_fps_ms = now;
         }

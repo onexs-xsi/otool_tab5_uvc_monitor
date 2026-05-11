@@ -97,17 +97,22 @@ This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as lo
 
 ```text
 main/
-  main.cpp              # app_main, USB power control, and top-level state machine
+  main.cpp              # app_main and the factory-mode preprocessor switch only
+  app_runtime.cpp       # board detection, TAB5/LVGL init, and first-screen setup
   app_internal.h        # shared types, constants, and extern declarations
-  cam_modes.cpp         # mode helpers and selection-limit logic
   display_pipeline.cpp  # JPEG decode, PPA scale/rotate, panel flush
-  audio_overlay.cpp     # UAC stream control, waveform/record overlay, touch polling
-  advanced_overlay.cpp  # directly rendered CAMERA ADVANCED sidebar during playback
-  uvc_callbacks.cpp     # UVC / UAC driver event callbacks
-  usb_task.cpp          # USB Host background task plus UVC control probe/apply helpers
-  ui_selection.cpp      # LVGL selection UI and CHECK / REINIT / CONFIGURATION interactions
-  stream_setup.cpp      # stream buffer allocation and release
-  video_loop.cpp        # main video-frame consumption and display loop
+  ui/
+    ui_selection.cpp      # LVGL selection UI and CHECK / REINIT / CONFIGURATION interactions
+    factory_overlay.cpp   # factory waiting screen plus version/FPS overlay during playback
+    audio_overlay.cpp     # UAC stream control, waveform/record overlay, touch polling
+    advanced_overlay.cpp  # directly rendered CAMERA ADVANCED sidebar during playback
+  uvc/
+    app_flow.cpp          # USB/UVC/UAC init, REINIT, and hot-plug state machine
+    cam_modes.cpp         # mode helpers, selection limits, and factory auto-pick logic
+    uvc_callbacks.cpp     # UVC / UAC driver event callbacks
+    usb_task.cpp          # USB Host background task plus UVC control probe/apply helpers
+    stream_setup.cpp      # stream buffer allocation and release
+    video_loop.cpp        # main video-frame consumption and display loop
 
 components/
   otool_dev_autodetect/   # board auto-detection
@@ -127,7 +132,7 @@ components/
 | `CONFIG_UAC_*` | Audio buffer depth, sample-rate behavior, and playback / recording latency |
 | `CONFIG_LVGL_*` | LVGL task stack, tick timing, and UI responsiveness |
 
-Selection and overlay limits such as the **1280x720 start cap** and advanced-control defaults are mainly defined in `main/app_internal.h` and `main/usb_task.cpp`.
+Selection and overlay limits such as the **1280x720 start cap** and advanced-control defaults are mainly defined in `main/app_internal.h` and `main/uvc/usb_task.cpp`.
 
 ---
 

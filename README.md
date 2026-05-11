@@ -97,17 +97,22 @@
 
 ```text
 main/
-  main.cpp              # app_main、USB 电源控制与顶层状态机
+  main.cpp              # 仅保留 app_main 与产线模式预处理开关
+  app_runtime.cpp       # 板卡识别、TAB5/LVGL 初始化与首屏 UI
   app_internal.h        # 共享类型、常量和 extern 声明
-  cam_modes.cpp         # 模式信息辅助函数与选择限制逻辑
   display_pipeline.cpp  # JPEG 解码、PPA 缩放/旋转、面板刷新
-  audio_overlay.cpp     # UAC 流控制、波形/录音叠加、触摸轮询
-  advanced_overlay.cpp  # 播放阶段直接绘制的 CAMERA ADVANCED 侧栏
-  uvc_callbacks.cpp     # UVC / UAC 驱动事件回调
-  usb_task.cpp          # USB Host 后台任务，以及 UVC 控件探测/下发辅助函数
-  ui_selection.cpp      # LVGL 选择界面与 CHECK / REINIT / CONFIGURATION 交互
-  stream_setup.cpp      # 流缓冲申请与释放
-  video_loop.cpp        # 主视频帧消费与显示循环
+  ui/
+    ui_selection.cpp      # LVGL 选择界面与 CHECK / REINIT / CONFIGURATION 交互
+    factory_overlay.cpp   # 产线等待界面与视频阶段版本/FPS 信息叠加
+    audio_overlay.cpp     # UAC 流控制、波形/录音叠加、触摸轮询
+    advanced_overlay.cpp  # 播放阶段直接绘制的 CAMERA ADVANCED 侧栏
+  uvc/
+    app_flow.cpp          # USB/UVC/UAC 初始化、REINIT 与热插拔状态机
+    cam_modes.cpp         # 模式信息辅助函数、选择限制与产线自动选模
+    uvc_callbacks.cpp     # UVC / UAC 驱动事件回调
+    usb_task.cpp          # USB Host 后台任务，以及 UVC 控件探测/下发辅助函数
+    stream_setup.cpp      # 流缓冲申请与释放
+    video_loop.cpp        # 主视频帧消费与显示循环
 
 components/
   otool_dev_autodetect/   # 开发板自动识别
@@ -127,7 +132,7 @@ components/
 | `CONFIG_UAC_*` | 音频缓冲深度、采样率行为与播放 / 录音延迟 |
 | `CONFIG_LVGL_*` | LVGL 任务栈大小、tick 定时与 UI 响应性 |
 
-像 **1280x720 启动上限**、高级控件默认值等选择与叠加限制，主要定义在 `main/app_internal.h` 和 `main/usb_task.cpp` 中。
+像 **1280x720 启动上限**、高级控件默认值等选择与叠加限制，主要定义在 `main/app_internal.h` 和 `main/uvc/usb_task.cpp` 中。
 
 ---
 

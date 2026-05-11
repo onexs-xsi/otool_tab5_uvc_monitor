@@ -10,16 +10,16 @@ ESP32-P4 (M5 TAB5) UVC Host 显示器。通过 USB Host 接收 UVC 视频流并�
 ## 已完成变更
 
 ### 1. REINIT 按钮
-- **文件**: `main/ui_selection.cpp`
+- **文件**: `main/ui/ui_selection.cpp`
 - **内容**: 底部工具栏新增 REINIT 橙色按钮，点击后通过 `app_request_usb_reinit()` 掉电再上电 USB 摄像头，
   用于摄像头卡死时快速恢复。
 
 ### 2. 热插拔支持
-- **文件**: `main/main.cpp`
+- **文件**: `main/uvc/app_flow.cpp`
 - **内容**: SELECTING 状态等待循环内增加 `EV_DEV_CONNECTED` 监听，摄像头重新上电后自动刷新模式列表。
 
 ### 3. USB 功耗循环实现
-- **文件**: `main/main.cpp`
+- **文件**: `main/app_runtime.cpp`, `main/uvc/app_flow.cpp`
 - **内容**: `app_request_usb_reinit()` 非阻塞实现，创建临时任务，先发 `EV_DEV_LOST | EV_REINIT_REQUESTED`，
   然后控制 USB5V GPIO 关→延时800ms→开。
 
@@ -29,7 +29,7 @@ ESP32-P4 (M5 TAB5) UVC Host 显示器。通过 USB Host 接收 UVC 视频流并�
 
 ### 4. 信息面板视觉重设计
 
-- **文件**: `main/ui_selection.cpp`, `main/app_internal.h`
+- **文件**: `main/ui/ui_selection.cpp`, `main/app_internal.h`
 - **内容**:
   - 右侧信息栏原有 4 个文本块替换为带视觉层次的卡片布局。
   - 模式选中卡：蓝色淡底，含格式 chip 徽章 + 大字分辨率 + fps 文本。
@@ -39,7 +39,7 @@ ESP32-P4 (M5 TAB5) UVC Host 显示器。通过 USB Host 接收 UVC 视频流并�
 
 ### 5. ADVANCED 悬浮控制面板
 
-- **文件**: `main/ui_selection.cpp`, `main/app_internal.h`
+- **文件**: `main/ui/ui_selection.cpp`, `main/app_internal.h`
 - **内容**:
   - 信息栏 Audio 下方新增 ADVANCED 切换按钮。
   - 点击后在屏幕右侧弹出 320px 宽浮动控制面板（lv_obj 覆盖在最顶层）。
@@ -54,7 +54,7 @@ ESP32-P4 (M5 TAB5) UVC Host 显示器。通过 USB Host 接收 UVC 视频流并�
 
 ### 6. UVC VideoControl 控制发送
 
-- **文件**: `main/usb_task.cpp`
+- **文件**: `main/uvc/usb_task.cpp`
 - **内容**:
   - 实现 `cam_ctrl_send_pu_i16(app_t*, uint8_t selector, int16_t value)`：
     发送 SET_CUR 到 PU 实体 (entity_id=3)，wLength=2。
@@ -69,7 +69,7 @@ ESP32-P4 (M5 TAB5) UVC Host 显示器。通过 USB Host 接收 UVC 视频流并�
 ## 架构说明
 
 ```
-ADVANCED 面板 (ui_selection.cpp)
+ADVANCED 面板 (ui/ui_selection.cpp)
   cam_ctrl_send_pu_i16(selector, value)  -- Contrast / Saturation
   cam_ctrl_send_xu_i32(selector, value)  -- Mirror/Flip/Effect/AE/JPEG/WB
        ↓

@@ -3,16 +3,18 @@
 # SPDX-License-Identifier: MIT
 
 idf_component_register(SRCS "main.cpp"
-                           "cam_modes.cpp"
-                           "display_pipeline.cpp"
-                           "audio_overlay.cpp"
-                           "advanced_overlay.cpp"
-                           "factory_overlay.cpp"
-                           "uvc_callbacks.cpp"
-                           "usb_task.cpp"
-                           "ui_selection.cpp"
-                           "stream_setup.cpp"
-                           "video_loop.cpp"
+                  "app_runtime.cpp"
+                  "uvc/app_flow.cpp"
+                  "uvc/cam_modes.cpp"
+                  "uvc/uvc_callbacks.cpp"
+                  "uvc/usb_task.cpp"
+                  "uvc/stream_setup.cpp"
+                  "uvc/video_loop.cpp"
+                  "ui/ui_selection.cpp"
+                  "ui/audio_overlay.cpp"
+                  "ui/advanced_overlay.cpp"
+                  "ui/factory_overlay.cpp"
+                  "display_pipeline.cpp"
                     INCLUDE_DIRS "."
                     REQUIRES
                         usb_host_uac

@@ -37,12 +37,6 @@
 #include "esp_lcd_touch.h"
 #include "lvgl.h"
 
-// 产线简洁模式：1=自动等待摄像头、自动选模并播放，断开后继续等待下一次接入。
-// 如需恢复原手动选择 UI，可在 main.cpp 改为 0，或在编译参数中覆盖同名宏。
-#ifndef TAB5_FACTORY_SIMPLE_MODE
-#define TAB5_FACTORY_SIMPLE_MODE 1
-#endif
-
 // ---------------------------------------------------------------------------
 // 常量
 // ---------------------------------------------------------------------------
@@ -163,6 +157,12 @@ typedef enum {
     APP_STATE_SELECTING,
     APP_STATE_STREAMING,
 } app_state_t;
+
+// 应用启动模式，由 main.cpp 传入 app_bootstrap。
+typedef enum {
+    APP_STARTUP_MODE_DEFAULT = 0,
+    APP_STARTUP_MODE_FACTORY_SIMPLE,
+} app_startup_mode_t;
 
 typedef enum {
     AUDIO_REC_IDLE,
@@ -310,7 +310,7 @@ typedef struct {
     // FPS 统计
     uint32_t                decoded_frames;
     uint32_t                fps_report_ms;
-    uint32_t                display_fps;
+    float                   display_fps;
 } app_t;
 
 // ---------------------------------------------------------------------------
@@ -323,7 +323,15 @@ extern portMUX_TYPE s_audio_scope_lock;
 // ---------------------------------------------------------------------------
 // 跨文件函数声明
 // ---------------------------------------------------------------------------
-// cam_modes.cpp
+// app_runtime.cpp
+bool app_bootstrap(app_t *a, app_startup_mode_t startup_mode);
+esp_err_t app_usb5v_set(bool enable, const char *reason_name);
+
+// uvc/app_flow.cpp
+bool app_uvc_host_services_init(app_t *a);
+void app_run_main_loop(app_t *a);
+
+// uvc/cam_modes.cpp
 const char *uvc_format_name(enum uvc_host_stream_format fmt);
 const char *uvc_stream_event_name(enum uvc_host_dev_event event);
 void log_frame_info(const uvc_host_frame_info_t *fi, size_t index);
@@ -348,7 +356,7 @@ void      yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs);
 void      uyvy_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs);
 void      gray8_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_count);
 
-// audio_overlay.cpp
+// ui/audio_overlay.cpp
 void draw_audio_overlay(app_t *a);
 void audio_record_touch_poll(app_t *a);
 bool start_uac_stream(app_t *a);
@@ -356,21 +364,21 @@ void stop_uac_stream(app_t *a);
 void uac_device_event_cb(uac_host_device_handle_t uac_device_handle,
                          const uac_host_device_event_t event, void *arg);
 
-// advanced_overlay.cpp
+// ui/advanced_overlay.cpp
 void draw_adv_overlay(app_t *a);
 void adv_overlay_touch_poll(app_t *a);
 
-// uvc_callbacks.cpp
+// uvc/uvc_callbacks.cpp
 bool frame_cb(const uvc_host_frame_t *frame, void *user_ctx);
 void stream_event_cb(const uvc_host_stream_event_data_t *event, void *user_ctx);
 void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_ctx);
 void uac_driver_event_cb(uint8_t addr, uint8_t iface_num,
                          const uac_host_driver_event_t event, void *arg);
 
-// usb_task.cpp
+// uvc/usb_task.cpp
 void usb_lib_task(void *arg);
 
-// usb_task.cpp - UVC VideoControl 控件能力探测与下发
+// uvc/usb_task.cpp - UVC VideoControl 控件能力探测与下发
 // stream_hdl 必须有效（流已打开）；返回 ESP_OK 表示传输成功，其他错误统一视为不支持该控件。
 esp_err_t cam_ctrl_probe_one(uvc_host_stream_hdl_t stream_hdl, cam_ctrl_desc_t *d);
 void      cam_ctrl_init_table(app_t *a);
@@ -381,11 +389,11 @@ bool      cam_ctrl_is_live_safe(const cam_ctrl_desc_t *d);
 // open_stream 成功后调用，下发所有 pending_apply 的当前值
 void      cam_ctrl_apply_pending(app_t *a);
 
-// main.cpp - 由 UI 触发的 USB 摄像头电源循环（VBUS 关 -> 延时 -> 开），
+// uvc/app_flow.cpp - 由 UI 触发的 USB 摄像头电源循环（VBUS 关 -> 延时 -> 开），
 // 用于卡死或主控复位后的快速恢复；非阻塞，会创建一个一次性辅助任务。
 void app_request_usb_reinit_from_user(app_t *a);
 
-// ui_selection.cpp
+// ui/ui_selection.cpp
 void ui_build_selection(app_t *a);
 void ui_style_mode_item(lv_obj_t *item, bool selected);
 void ui_populate_mode_list(app_t *a);
@@ -398,18 +406,18 @@ void ui_build_stream_overlay(app_t *a);
 void ui_refresh_stream_overlay(app_t *a);
 void ui_destroy_stream_overlay(app_t *a);
 
-// factory_overlay.cpp
+// ui/factory_overlay.cpp
 void factory_ui_build_waiting(app_t *a);
 void factory_ui_set_waiting_status(app_t *a, const char *status_base);
 void factory_ui_set_waiting_info(app_t *a, const char *info);
 void factory_ui_set_mode_info(app_t *a);
 void draw_factory_video_overlay(app_t *a);
 
-// stream_setup.cpp
+// uvc/stream_setup.cpp
 bool alloc_stream_resources(app_t *a);
 void free_stream_resources(app_t *a);
 
-// video_loop.cpp
+// uvc/video_loop.cpp
 void drain_queue(app_t *a);
 bool open_stream(app_t *a, int mode_idx);
 bool probe_stream_configuration(app_t *a, int mode_idx);

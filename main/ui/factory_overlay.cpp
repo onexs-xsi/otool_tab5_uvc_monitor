@@ -7,8 +7,8 @@
 // 产线简洁模式的等待界面与视频信息叠加层。
 #include "app_internal.h"
 
-#ifndef TAB5_APP_VERSION
-#define TAB5_APP_VERSION "0.0.0"
+#ifndef TAB5_APP_VERSION_BUILD
+#define TAB5_APP_VERSION_BUILD "vdev_unknown"
 #endif
 
 static lv_obj_t *s_factory_wait_lbl = nullptr;
@@ -40,8 +40,7 @@ static void factory_wait_timer_cb(lv_timer_t *timer)
 
 void factory_ui_build_waiting(app_t *a)
 {
-#if TAB5_FACTORY_SIMPLE_MODE
-    (void)a;
+    if (!a || !a->factory_simple_mode_active) return;
     if (!otool_lvgl_port_lock(0)) {
         ESP_LOGE(TAG, "factory ui lock fail");
         return;
@@ -73,7 +72,7 @@ void factory_ui_build_waiting(app_t *a)
 
     s_factory_version_lbl = lv_label_create(scr);
     lv_obj_set_style_text_color(s_factory_version_lbl, lv_color_make(0xC8, 0xD1, 0xDC), 0);
-    lv_label_set_text(s_factory_version_lbl, TAB5_APP_VERSION);
+    lv_label_set_text(s_factory_version_lbl, TAB5_APP_VERSION_BUILD);
     lv_obj_align(s_factory_version_lbl, LV_ALIGN_BOTTOM_RIGHT, -24, -22);
 
     strncpy(s_factory_wait_base, "Waiting for USB camera", sizeof(s_factory_wait_base) - 1);
@@ -84,15 +83,14 @@ void factory_ui_build_waiting(app_t *a)
 
     lv_obj_invalidate(scr);
     otool_lvgl_port_unlock();
-#else
-    (void)a;
-#endif
 }
 
 void factory_ui_set_waiting_status(app_t *a, const char *status_base)
 {
-#if TAB5_FACTORY_SIMPLE_MODE
-    (void)a;
+    if (!a || !a->factory_simple_mode_active) {
+        (void)status_base;
+        return;
+    }
     const char *base = status_base ? status_base : "Waiting for USB camera";
     if (!otool_lvgl_port_lock(50)) return;
     strncpy(s_factory_wait_base, base, sizeof(s_factory_wait_base) - 1);
@@ -100,32 +98,25 @@ void factory_ui_set_waiting_status(app_t *a, const char *status_base)
     s_factory_wait_dot = 0;
     factory_wait_update_label();
     otool_lvgl_port_unlock();
-#else
-    (void)a;
-    (void)status_base;
-#endif
 }
 
 void factory_ui_set_waiting_info(app_t *a, const char *info)
 {
-#if TAB5_FACTORY_SIMPLE_MODE
-    (void)a;
+    if (!a || !a->factory_simple_mode_active) {
+        (void)info;
+        return;
+    }
     if (!s_factory_info_lbl) return;
     if (!otool_lvgl_port_lock(50)) return;
     lv_label_set_text(s_factory_info_lbl, info ? info : "Camera: waiting");
     lv_obj_align(s_factory_info_lbl, LV_ALIGN_BOTTOM_LEFT, 24, -22);
     if (s_factory_version_lbl) lv_obj_align(s_factory_version_lbl, LV_ALIGN_BOTTOM_RIGHT, -24, -22);
     otool_lvgl_port_unlock();
-#else
-    (void)a;
-    (void)info;
-#endif
 }
 
 void factory_ui_set_mode_info(app_t *a)
 {
-#if TAB5_FACTORY_SIMPLE_MODE
-    if (!a) return;
+    if (!a || !a->factory_simple_mode_active) return;
     char info[144];
     if (a->dev_addr != 0 && a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count) {
         const cam_mode_t *m = &a->modes[a->selected_mode];
@@ -137,9 +128,6 @@ void factory_ui_set_mode_info(app_t *a)
         snprintf(info, sizeof(info), "Camera: waiting");
     }
     factory_ui_set_waiting_info(a, info);
-#else
-    (void)a;
-#endif
 }
 
 static inline uint16_t rgb565_factory(uint8_t r, uint8_t g, uint8_t b)
@@ -217,6 +205,7 @@ static void glyph5x7_factory(char c, uint8_t rows[7])
     case '=': { uint8_t r[7] = {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00}; memcpy(rows,r,7); break; }
     case '/': { uint8_t r[7] = {0x01,0x01,0x02,0x04,0x08,0x10,0x10}; memcpy(rows,r,7); break; }
     case '.': { uint8_t r[7] = {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C}; memcpy(rows,r,7); break; }
+    case '_': { uint8_t r[7] = {0x00,0x00,0x00,0x00,0x00,0x00,0x1F}; memcpy(rows,r,7); break; }
     case '|': { uint8_t r[7] = {0x04,0x04,0x04,0x04,0x04,0x04,0x04}; memcpy(rows,r,7); break; }
     default: break;
     }
@@ -264,7 +253,6 @@ static const char *factory_short_format_name(enum uvc_host_stream_format fmt)
 
 void draw_factory_video_overlay(app_t *a)
 {
-#if TAB5_FACTORY_SIMPLE_MODE
     if (!a || !a->factory_simple_mode_active || !a->panel_buf) return;
 
     const int margin = 14;
@@ -281,11 +269,11 @@ void draw_factory_video_overlay(app_t *a)
     if (a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count) {
         const cam_mode_t *m = &a->modes[a->selected_mode];
         snprintf(info0, sizeof(info0), "CAM ADDR %u STREAM %u", a->dev_addr, a->stream_idx);
-        snprintf(info1, sizeof(info1), "%s %ux%u FPS %u",
-                 factory_short_format_name(m->fmt), m->w, m->h, (unsigned)a->display_fps);
+        snprintf(info1, sizeof(info1), "%s %ux%u FPS %.2f",
+                 factory_short_format_name(m->fmt), m->w, m->h, (double)a->display_fps);
     } else {
         snprintf(info0, sizeof(info0), "CAM ADDR %u STREAM %u", a->dev_addr, a->stream_idx);
-        snprintf(info1, sizeof(info1), "FPS %u", (unsigned)a->display_fps);
+        snprintf(info1, sizeof(info1), "FPS %.2f", (double)a->display_fps);
     }
 
     const int info_w0 = text_width_logic_factory(info0, scale);
@@ -299,7 +287,7 @@ void draw_factory_video_overlay(app_t *a)
     draw_text_logic_factory(a, info_x + 8, info_y + 7, info0, info_fg, scale);
     draw_text_logic_factory(a, info_x + 8, info_y + 7 + line_h + line_gap, info1, accent, scale);
 
-    const char *ver = TAB5_APP_VERSION;
+    const char *ver = TAB5_APP_VERSION_BUILD;
     const int ver_w = text_width_logic_factory(ver, scale) + 18;
     const int ver_h = line_h + 14;
     const int ver_x = PANEL_LOGIC_W - margin - ver_w;
@@ -307,7 +295,4 @@ void draw_factory_video_overlay(app_t *a)
     panel_prepare_dirty_logic(a, ver_x, ver_y, ver_w, ver_h);
     fill_rect_logic_factory(a, ver_x, ver_y, ver_w, ver_h, bg);
     draw_text_logic_factory(a, ver_x + 8, ver_y + 7, ver, fg, scale);
-#else
-    (void)a;
-#endif
 }
