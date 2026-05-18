@@ -162,6 +162,7 @@ typedef enum {
 typedef enum {
     APP_STARTUP_MODE_DEFAULT = 0,
     APP_STARTUP_MODE_FACTORY_SIMPLE,
+    APP_STARTUP_MODE_FACTORY_SIMPLE_AUTO_REBOOT,
 } app_startup_mode_t;
 
 typedef enum {
@@ -196,6 +197,7 @@ typedef struct {
     // 状态
     volatile app_state_t    state;
     bool                    factory_simple_mode_active;
+    bool                    auto_reboot_on_camera_lost;
     EventGroupHandle_t      events;
 
     // UVC 设备信息
@@ -326,6 +328,7 @@ extern portMUX_TYPE s_audio_scope_lock;
 // app_runtime.cpp
 bool app_bootstrap(app_t *a, app_startup_mode_t startup_mode);
 esp_err_t app_usb5v_set(bool enable, const char *reason_name);
+void app_reboot_if_camera_lost_mode(app_t *a, const char *reason_name);
 
 // uvc/app_flow.cpp
 bool app_uvc_host_services_init(app_t *a);

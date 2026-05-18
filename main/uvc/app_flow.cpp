@@ -162,6 +162,7 @@ static void app_refresh_waiting_selection_ui(app_t *a, const char *status_text)
 static void app_handle_selecting_device_lost(app_t *a, const char *status_text)
 {
     if (!a) return;
+    app_reboot_if_camera_lost_mode(a, status_text ? status_text : "selecting device lost");
     app_reset_connected_device_state(a);
     app_refresh_waiting_selection_ui(a, status_text ? status_text : "Camera disconnected, waiting...");
 }
@@ -296,12 +297,16 @@ static int app_select_factory_simple_mode(app_t *a)
 static void app_wait_factory_device_removed(app_t *a, const char *status_text)
 {
     if (!a) return;
+    const bool device_was_present = (a->dev_addr != 0);
     factory_ui_set_waiting_status(a, status_text ? status_text : "Waiting for USB camera");
     factory_ui_set_mode_info(a);
     while (a->dev_addr != 0 && usb_addr_present(a->dev_addr)) {
         EventBits_t bits = xEventGroupWaitBits(a->events, EV_DEV_LOST,
                                                pdTRUE, pdFALSE, kUiUsbPollTicks);
         if (bits & EV_DEV_LOST) break;
+    }
+    if (device_was_present) {
+        app_reboot_if_camera_lost_mode(a, status_text ? status_text : "factory device removed");
     }
     app_reset_connected_device_state(a);
     factory_ui_set_waiting_status(a, "Waiting for USB camera");
@@ -326,6 +331,7 @@ static void app_run_factory_loop(app_t *a)
         if ((xEventGroupGetBits(a->events) & EV_DEV_LOST) ||
             (a->dev_addr != 0 && !usb_addr_present(a->dev_addr))) {
             ESP_LOGW(TAG, "Factory mode: device lost before auto start");
+            app_reboot_if_camera_lost_mode(a, "factory device lost before auto start");
             app_reset_connected_device_state(a);
             factory_ui_set_waiting_status(a, "Waiting for USB camera");
             factory_ui_set_waiting_info(a, "Camera: waiting");
@@ -387,6 +393,9 @@ static void app_run_factory_loop(app_t *a)
         app_cleanup_after_stream(a);
 
         EventBits_t pending_bits = xEventGroupGetBits(a->events);
+        if (pending_bits & EV_DEV_LOST) {
+            app_reboot_if_camera_lost_mode(a, "factory stream ended after device lost");
+        }
         bool dev_reconnected = (pending_bits & EV_DEV_CONNECTED) != 0;
 
         if (!dev_reconnected) {
@@ -538,6 +547,9 @@ static void app_run_selection_loop(app_t *a)
         app_cleanup_after_stream(a);
 
         EventBits_t pending_bits = xEventGroupGetBits(a->events);
+        if (pending_bits & EV_DEV_LOST) {
+            app_reboot_if_camera_lost_mode(a, "stream ended after device lost");
+        }
         bool dev_reconnected = (pending_bits & EV_DEV_CONNECTED) != 0;
 
         if (!dev_reconnected) {

@@ -9,6 +9,7 @@
 
 #include "M5Autodetect.h"
 #include "otool_tab5_component.h"
+#include "esp_system.h"
 
 const char *TAG = "uvc_cam";
 app_t s_app;
@@ -24,12 +25,21 @@ esp_err_t app_usb5v_set(bool enable, const char *reason_name)
     return s_comp.usb5v_enable(enable);
 }
 
+void app_reboot_if_camera_lost_mode(app_t *a, const char *reason_name)
+{
+    if (!a || !a->auto_reboot_on_camera_lost) return;
+
+    const char *reason = reason_name ? reason_name : "camera lost";
+    ESP_LOGW(TAG, "Camera lost in auto-reboot startup mode, restarting: %s", reason);
+    esp_restart();
+}
+
 static bool app_init_board_and_tab5(app_t *a)
 {
     if (!a) return false;
 
     static M5Autodetect autodetect;
-    autodetect.begin(M5Autodetect::debug_info);
+    autodetect.begin(M5Autodetect::debug_verbose);
     const m5::autodetect::DeviceInfo *info = autodetect.detect();
     if (!info) {
         ESP_LOGE(TAG, "No device detected");
@@ -137,7 +147,11 @@ static bool app_init_lvgl(app_t *a)
 
 static void app_build_first_screen(app_t *a, app_startup_mode_t startup_mode)
 {
-    a->factory_simple_mode_active = (startup_mode == APP_STARTUP_MODE_FACTORY_SIMPLE);
+    a->factory_simple_mode_active =
+        (startup_mode == APP_STARTUP_MODE_FACTORY_SIMPLE) ||
+        (startup_mode == APP_STARTUP_MODE_FACTORY_SIMPLE_AUTO_REBOOT);
+    a->auto_reboot_on_camera_lost =
+        (startup_mode == APP_STARTUP_MODE_FACTORY_SIMPLE_AUTO_REBOOT);
     if (a->factory_simple_mode_active) {
         factory_ui_build_waiting(a);
     } else {

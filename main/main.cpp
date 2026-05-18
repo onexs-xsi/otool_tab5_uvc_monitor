@@ -8,6 +8,6 @@
 
 extern "C" void app_main(void)
 {
-    if (!app_bootstrap(&s_app, APP_STARTUP_MODE_DEFAULT)) return;
+    if (!app_bootstrap(&s_app, APP_STARTUP_MODE_FACTORY_SIMPLE_AUTO_REBOOT)) return;
     app_run_main_loop(&s_app);
 }

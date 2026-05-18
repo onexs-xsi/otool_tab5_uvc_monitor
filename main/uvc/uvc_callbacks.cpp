@@ -58,6 +58,7 @@ void stream_event_cb(const uvc_host_stream_event_data_t *event, void *user_ctx)
             a->uac_selected = false;
         }
         xEventGroupSetBits(a->events, EV_DEV_LOST);
+        app_reboot_if_camera_lost_mode(a, "UVC stream device disconnected");
     }
 }
 

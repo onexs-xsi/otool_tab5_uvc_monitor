@@ -27,7 +27,7 @@ idf_component_register(SRCS "main.cpp"
                         esp_driver_jpeg
                         usb)
 
-set(TAB5_APP_VERSION "1.0.0" CACHE STRING "OTool Tab5 UVC Monitor firmware version")
+set(TAB5_APP_VERSION "1.0.1" CACHE STRING "OTool Tab5 UVC Monitor firmware version")
 string(TIMESTAMP TAB5_APP_BUILD_TIME "%Y%m%d_%H%M%S")
 set(TAB5_APP_VERSION_BUILD "v${TAB5_APP_VERSION}_${TAB5_APP_BUILD_TIME}")
 
