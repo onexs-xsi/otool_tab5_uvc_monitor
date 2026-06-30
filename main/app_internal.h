@@ -67,6 +67,7 @@
 
 #define CAM_MAX_CANDIDATES  64
 #define CAM_FRAME_CNT       6
+#define CAM_HIGH_RES_FRAME_CNT 3
 #define CAM_QUEUE_DEPTH     1
 #define CAM_URB_CNT         3
 #define CAM_URB_SIZE        (16 * 1024)
@@ -292,6 +293,9 @@ typedef struct {
     lv_obj_t               *check_close_btn;
     volatile bool           check_running;
     TaskHandle_t            check_task;
+    lv_obj_t               *not_recommended_confirm_overlay;
+    int                     not_recommended_confirm_mode;
+    int                     not_recommended_confirmed_mode;
 
     // ADVANCED 控制面板（选择屏用 LVGL，视频屏直接绘制到视频帧）
     lv_obj_t               *adv_container;    // 选择屏 Advanced 容器
@@ -348,6 +352,8 @@ bool mode_is_safe(const cam_mode_t *m);
 bool mode_is_hw_supported(const cam_mode_t *m);
 // 用户是否被允许选中该模式 (受 CAM_MAX_SELECT_W/H 限制).
 bool mode_is_selectable(const cam_mode_t *m);
+bool mode_is_not_recommended(const cam_mode_t *m);
+bool mode_start_requires_confirmation(const cam_mode_t *m);
 const char *mode_unavailable_reason(const cam_mode_t *m);
 void add_mode(app_t *a, unsigned w, unsigned h,
               float fps, enum uvc_host_stream_format fmt);

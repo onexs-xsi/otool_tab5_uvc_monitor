@@ -98,12 +98,25 @@ bool mode_is_selectable(const cam_mode_t *m)
     return true;
 }
 
+bool mode_is_not_recommended(const cam_mode_t *m)
+{
+    if (!m) return false;
+    if (!mode_is_hw_supported(m)) return false;
+    if (m->fmt == UVC_VS_FORMAT_NV12) return false;
+    return m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H;
+}
+
+bool mode_start_requires_confirmation(const cam_mode_t *m)
+{
+    return mode_is_not_recommended(m);
+}
+
 const char *mode_unavailable_reason(const cam_mode_t *m)
 {
     if (!m) return "mode unavailable";
     if (!mode_is_hw_supported(m)) return "hardware unsupported";
     if (m->fmt == UVC_VS_FORMAT_NV12) return "format unsupported";
-    if (m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H) return "not recommended";
+    if (mode_is_not_recommended(m)) return "not recommended";
     return nullptr;
 }
 

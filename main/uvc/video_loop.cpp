@@ -130,7 +130,7 @@ static bool stream_open_only(app_t *a, int mode_idx)
     }
     const cam_mode_t *m = &a->modes[mode_idx];
     const char *reason = mode_unavailable_reason(m);
-    if (reason) {
+    if (reason && !(mode_start_requires_confirmation(m) && a->not_recommended_confirmed_mode == mode_idx)) {
         ESP_LOGW(TAG, "stream open rejected: %s %ux%u @%.1f is %s",
                  uvc_format_name(m->fmt), m->w, m->h, m->fps, reason);
         return false;
@@ -148,7 +148,8 @@ static bool stream_open_only(app_t *a, int mode_idx)
     cfg.vs_format.v_res      = m->h;
     cfg.vs_format.fps        = m->fps;
     cfg.vs_format.format     = m->fmt;
-    cfg.advanced.number_of_frame_buffers = CAM_FRAME_CNT;
+    cfg.advanced.number_of_frame_buffers = mode_start_requires_confirmation(m) ?
+                                           CAM_HIGH_RES_FRAME_CNT : CAM_FRAME_CNT;
     cfg.advanced.frame_size              = a->uvc_frame_size_override;
     cfg.advanced.frame_heap_caps         = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     cfg.advanced.number_of_urbs          = CAM_URB_CNT;

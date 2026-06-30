@@ -22,6 +22,9 @@ static void adv_close_cb(lv_event_t *e);
 static void adv_overlay_bg_cb(lv_event_t *e);
 static void adv_widget_changed_cb(lv_event_t *e);
 static void adv_step_click_cb(lv_event_t *e);
+static void confirm_not_recommended_open_cb(lv_event_t *e);
+static void confirm_not_recommended_cancel_cb(lv_event_t *e);
+static bool adv_any_supported(const app_t *a);
 
 // ===================================================================
 // LVGL selection UI
@@ -56,6 +59,45 @@ static void ui_reset_touch_cache(app_t *a)
     if (a && a->lv_touch_indev) {
         otool_lvgl_port_touch_reset(a->lv_touch_indev);
     }
+}
+
+static bool ui_mode_start_allowed(const app_t *a, int idx)
+{
+    if (!a || idx < 0 || idx >= (int)a->mode_count) return false;
+    const cam_mode_t *m = &a->modes[idx];
+    return mode_is_selectable(m) || mode_start_requires_confirmation(m);
+}
+
+static void ui_clear_not_recommended_confirm(app_t *a)
+{
+    if (!a) return;
+    if (a->not_recommended_confirm_overlay) {
+        ui_reset_touch_cache(a);
+        lv_obj_delete(a->not_recommended_confirm_overlay);
+    }
+    a->not_recommended_confirm_overlay = nullptr;
+    a->not_recommended_confirm_mode = -1;
+}
+
+static void ui_set_selected_mode_visual(app_t *a, int idx)
+{
+    if (!a || !a->list_obj) return;
+    uint32_t cnt = lv_obj_get_child_count(a->list_obj);
+    for (uint32_t i = 0; i < cnt; i++) {
+        lv_obj_t *item = lv_obj_get_child(a->list_obj, i);
+        ui_style_mode_item(item, (int)i == idx);
+    }
+}
+
+static void ui_commit_selected_mode(app_t *a)
+{
+    if (!a || a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return;
+    a->uac_selected = a->uac_rx_available && a->uac_switch &&
+                      lv_obj_has_state(a->uac_switch, LV_STATE_CHECKED);
+    a->adv_live_enabled = adv_any_supported(a) && a->adv_switch &&
+                          lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
+    ESP_LOGI(TAG, "User confirmed mode %d", a->selected_mode);
+    xEventGroupSetBits(a->events, EV_USER_CONFIRMED);
 }
 
 static bool adv_any_supported(const app_t *a)
@@ -301,8 +343,7 @@ static void check_task_entry(void *arg)
 
     if (otool_lvgl_port_lock(100)) {
         a->check_running = false;
-        if (a->confirm_btn && a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count &&
-            mode_is_selectable(&a->modes[a->selected_mode])) {
+        if (a->confirm_btn && ui_mode_start_allowed(a, a->selected_mode)) {
             lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
         }
         if (a->check_btn && a->mode_count > 0) lv_obj_clear_state(a->check_btn, LV_STATE_DISABLED);
@@ -370,6 +411,121 @@ void ui_update_uac_option(app_t *a)
     ui_update_info_panel(a);
 }
 
+static void show_not_recommended_confirm_dialog(app_t *a, int idx)
+{
+    if (!a || idx < 0 || idx >= (int)a->mode_count) return;
+    const cam_mode_t *m = &a->modes[idx];
+    if (!mode_start_requires_confirmation(m)) return;
+
+    ui_clear_not_recommended_confirm(a);
+    a->not_recommended_confirm_mode = idx;
+
+    lv_obj_t *scr = lv_scr_act();
+    a->not_recommended_confirm_overlay = lv_obj_create(scr);
+    lv_obj_set_size(a->not_recommended_confirm_overlay, lv_pct(100), lv_pct(100));
+    lv_obj_align(a->not_recommended_confirm_overlay, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(a->not_recommended_confirm_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(a->not_recommended_confirm_overlay, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(a->not_recommended_confirm_overlay, 0, 0);
+    lv_obj_set_style_radius(a->not_recommended_confirm_overlay, 0, 0);
+    lv_obj_set_style_pad_all(a->not_recommended_confirm_overlay, 0, 0);
+    lv_obj_clear_flag(a->not_recommended_confirm_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(a->not_recommended_confirm_overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *panel = lv_obj_create(a->not_recommended_confirm_overlay);
+    lv_obj_set_size(panel, 680, 330);
+    lv_obj_center(panel);
+    ui_set_panel_style(panel, lv_color_white(), 16);
+    lv_obj_set_style_pad_all(panel, 24, 0);
+    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = ui_create_info_label(panel, "Open video stream?",
+                                           lv_color_make(0x0F, 0x17, 0x2A),
+                                           &lv_font_montserrat_24);
+    lv_obj_set_height(title, 36);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+             "%s %ux%u @%.1f fps is not recommended.\n\n"
+             "Performance may be poor, and the image will be compressed to fit the display.",
+             uvc_format_name(m->fmt), m->w, m->h, m->fps);
+    lv_obj_t *body = ui_create_info_label(panel, msg, lv_color_make(0x47, 0x55, 0x69),
+                                          &lv_font_montserrat_16);
+    lv_obj_set_width(body, 632);
+    lv_obj_set_height(body, 150);
+    lv_obj_align(body, LV_ALIGN_TOP_LEFT, 0, 56);
+
+    lv_obj_t *cancel = lv_button_create(panel);
+    lv_obj_set_size(cancel, 150, 48);
+    lv_obj_align(cancel, LV_ALIGN_BOTTOM_RIGHT, -172, 0);
+    lv_obj_set_style_radius(cancel, 12, 0);
+    lv_obj_set_style_bg_color(cancel, lv_color_make(0xE2, 0xE8, 0xF0), 0);
+    lv_obj_set_style_shadow_width(cancel, 0, 0);
+    lv_obj_add_event_cb(cancel, confirm_not_recommended_cancel_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *cancel_lbl = lv_label_create(cancel);
+    lv_label_set_text(cancel_lbl, "CANCEL");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_make(0x0F, 0x17, 0x2A), 0);
+    lv_obj_center(cancel_lbl);
+
+    lv_obj_t *open = lv_button_create(panel);
+    lv_obj_set_size(open, 150, 48);
+    lv_obj_align(open, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_radius(open, 12, 0);
+    lv_obj_set_style_bg_color(open, lv_color_make(0xB4, 0x53, 0x09), 0);
+    lv_obj_set_style_shadow_width(open, 0, 0);
+    lv_obj_add_event_cb(open, confirm_not_recommended_open_cb, LV_EVENT_CLICKED, a);
+    lv_obj_t *open_lbl = lv_label_create(open);
+    lv_label_set_text(open_lbl, "OPEN");
+    lv_obj_set_style_text_color(open_lbl, lv_color_white(), 0);
+    lv_obj_center(open_lbl);
+
+    lv_obj_move_foreground(a->not_recommended_confirm_overlay);
+}
+
+static void confirm_not_recommended_cancel_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    ui_clear_not_recommended_confirm(a);
+    if (a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count &&
+        mode_start_requires_confirmation(&a->modes[a->selected_mode])) {
+        ui_set_status(a, "Press START to confirm opening this not recommended mode");
+    } else {
+        ui_set_status(a, "Select mode and press START");
+    }
+}
+
+static void confirm_not_recommended_open_cb(lv_event_t *e)
+{
+    app_t *a = (app_t *)lv_event_get_user_data(e);
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !a) return;
+    const int idx = a->not_recommended_confirm_mode;
+    if (idx < 0 || idx >= (int)a->mode_count) {
+        ui_clear_not_recommended_confirm(a);
+        return;
+    }
+
+    const cam_mode_t *m = &a->modes[idx];
+    if (!mode_start_requires_confirmation(m)) {
+        ui_clear_not_recommended_confirm(a);
+        return;
+    }
+    if (!mode_is_safe(m)) {
+        ui_clear_not_recommended_confirm(a);
+        ui_set_status(a, "Selected mode needs too much USB memory");
+        return;
+    }
+
+    a->not_recommended_confirmed_mode = idx;
+    a->selected_mode = idx;
+    ui_set_selected_mode_visual(a, idx);
+    ui_update_info_panel(a);
+    ui_set_status(a, "Starting not recommended video stream...");
+    ui_clear_not_recommended_confirm(a);
+    ui_commit_selected_mode(a);
+}
+
 static void list_item_cb(lv_event_t *e)
 {
     app_t *a = (app_t *)lv_event_get_user_data(e);
@@ -377,12 +533,11 @@ static void list_item_cb(lv_event_t *e)
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
     int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
     if (idx < 0 || idx >= (int)a->mode_count) return;
+    if (a->check_running) return;
     // 不可启动的模式仍可点击，用于解释为什么不能选择.
     const char *unavailable = mode_unavailable_reason(&a->modes[idx]);
-    if (unavailable) {
-        if (strcmp(unavailable, "not recommended") == 0) {
-            ui_set_status(a, "This mode is not recommended on this hardware");
-        } else if (strcmp(unavailable, "hardware unsupported") == 0) {
+    if (unavailable && strcmp(unavailable, "not recommended") != 0) {
+        if (strcmp(unavailable, "hardware unsupported") == 0) {
             ui_set_status(a, "This mode is hardware unsupported");
         } else {
             char msg[96];
@@ -393,16 +548,20 @@ static void list_item_cb(lv_event_t *e)
     }
 
     // 清除所有项高亮
-    uint32_t cnt = lv_obj_get_child_count(a->list_obj);
-    for (uint32_t i = 0; i < cnt; i++) {
-        lv_obj_t *item = lv_obj_get_child(a->list_obj, i);
-        ui_style_mode_item(item, false);
-    }
+    a->not_recommended_confirmed_mode = -1;
+    ui_set_selected_mode_visual(a, idx);
 
     // 高亮当前选中项
-    ui_style_mode_item(btn, true);
     a->selected_mode = idx;
     ui_update_info_panel(a);
+    if (a->confirm_btn && ui_mode_start_allowed(a, idx)) {
+        lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
+    }
+    if (unavailable && strcmp(unavailable, "not recommended") == 0) {
+        ui_set_status(a, "Press START to confirm opening this not recommended mode");
+    } else {
+        ui_set_status(a, "Select mode and press START");
+    }
 }
 
 static void btn_confirm_cb(lv_event_t *e)
@@ -411,27 +570,26 @@ static void btn_confirm_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (a->check_running) return;
     if (a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return;
-    const char *unavailable = mode_unavailable_reason(&a->modes[a->selected_mode]);
-    if (unavailable) {
-        if (strcmp(unavailable, "not recommended") == 0) {
-            ui_set_status(a, "Pick a recommended mode to continue");
-        } else if (strcmp(unavailable, "hardware unsupported") == 0) {
+    const cam_mode_t *selected = &a->modes[a->selected_mode];
+    const char *unavailable = mode_unavailable_reason(selected);
+    if (!ui_mode_start_allowed(a, a->selected_mode)) {
+        if (unavailable && strcmp(unavailable, "hardware unsupported") == 0) {
             ui_set_status(a, "Pick a hardware supported mode to continue");
         } else {
             ui_set_status(a, "Pick a startable mode to continue");
         }
         return;
     }
-    a->uac_selected = a->uac_rx_available && a->uac_switch &&
-                      lv_obj_has_state(a->uac_switch, LV_STATE_CHECKED);
-    a->adv_live_enabled = adv_any_supported(a) && a->adv_switch &&
-                          lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
-    if (!mode_is_safe(&a->modes[a->selected_mode])) {
+    if (mode_start_requires_confirmation(selected) &&
+        a->not_recommended_confirmed_mode != a->selected_mode) {
+        show_not_recommended_confirm_dialog(a, a->selected_mode);
+        return;
+    }
+    if (!mode_is_safe(selected)) {
         ui_set_status(a, "Selected mode needs too much USB memory");
         return;
     }
-    ESP_LOGI(TAG, "User confirmed mode %d", a->selected_mode);
-    xEventGroupSetBits(a->events, EV_USER_CONFIRMED);
+    ui_commit_selected_mode(a);
 }
 
 static void btn_check_cb(lv_event_t *e)
@@ -1098,7 +1256,8 @@ void ui_populate_mode_list(app_t *a)
     for (int i = 0; i < (int)a->mode_count; i++) {
         const cam_mode_t *m = &a->modes[i];
         const char *unavailable = mode_unavailable_reason(m);
-        const bool selectable = (unavailable == nullptr);
+        const bool selectable = (unavailable == nullptr) ||
+                                (strcmp(unavailable, "not recommended") == 0);
 
         char res_buf[64];
         char fps_buf[24];
@@ -1157,6 +1316,7 @@ void ui_clear_mode_list(app_t *a)
 {
     if (!a->list_obj) return;
     ui_reset_touch_cache(a);
+    ui_clear_not_recommended_confirm(a);
     lv_obj_clean(a->list_obj);
 }
 

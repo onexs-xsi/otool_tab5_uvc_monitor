@@ -16,7 +16,10 @@ static const size_t kUsbAddrScanMax = 16;
 
 static bool app_mode_index_startable(const app_t *a, int idx)
 {
-    return a && idx >= 0 && idx < (int)a->mode_count && mode_is_selectable(&a->modes[idx]);
+    if (!a || idx < 0 || idx >= (int)a->mode_count) return false;
+    const cam_mode_t *m = &a->modes[idx];
+    return mode_is_selectable(m) ||
+           (mode_start_requires_confirmation(m) && a->not_recommended_confirmed_mode == idx);
 }
 
 static bool app_has_startable_mode(const app_t *a)
@@ -64,6 +67,8 @@ static void app_reset_connected_device_state(app_t *a)
 
     a->mode_count = 0;
     a->selected_mode = 0;
+    a->not_recommended_confirm_mode = -1;
+    a->not_recommended_confirmed_mode = -1;
     a->dev_addr = 0;
     a->stream_idx = 0;
     a->dev_vid = 0;
@@ -87,6 +92,8 @@ static void app_reset_stream_runtime_flags(app_t *a)
     a->adv_live_enabled = false;
     a->adv_touch_down = false;
     a->stream_lvgl_ui = false;
+    a->not_recommended_confirm_mode = -1;
+    a->not_recommended_confirmed_mode = -1;
 }
 
 static void app_prepare_stream_restart_state(app_t *a)
@@ -248,6 +255,8 @@ bool app_uvc_host_services_init(app_t *a)
 
     // 初始化高级控件能力表（探测在 open_stream 后执行）。
     cam_ctrl_init_table(a);
+    a->not_recommended_confirm_mode = -1;
+    a->not_recommended_confirmed_mode = -1;
 
     usb_host_config_t hcfg = {};
     hcfg.skip_phy_setup = false;
