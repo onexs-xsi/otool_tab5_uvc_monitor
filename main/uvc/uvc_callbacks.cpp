@@ -135,12 +135,10 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
         }
 
         if (fi->h_res > CAM_MAX_SRC_W || fi->v_res > CAM_MAX_SRC_H) {
-            ESP_LOGW(TAG, "    skipped: resolution %ux%u exceeds hw limit %ux%u",
+            ESP_LOGW(TAG, "    listed: %ux%u is hardware unsupported (hw limit %ux%u)",
                      fi->h_res, fi->v_res, CAM_MAX_SRC_W, CAM_MAX_SRC_H);
-            continue;
-        }
-        if (fi->h_res > CAM_MAX_SELECT_W || fi->v_res > CAM_MAX_SELECT_H) {
-            ESP_LOGI(TAG, "    info-only: %ux%u exceeds selectable cap %ux%u (will be greyed out in UI)",
+        } else if (fi->h_res > CAM_MAX_SELECT_W || fi->v_res > CAM_MAX_SELECT_H) {
+            ESP_LOGI(TAG, "    listed: %ux%u is not recommended (selectable cap %ux%u)",
                      fi->h_res, fi->v_res, CAM_MAX_SELECT_W, CAM_MAX_SELECT_H);
         }
         // 添加默认帧率（所有格式均列出，不可解码的格式在播放时会提示）
@@ -160,23 +158,30 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     if (a->mode_count == 0) {
         ESP_LOGW(TAG,
-                 "No modes found within hw limit %ux%u: MJPEG(HW)=%u MJPEG(SW)=%u YUY2=%u NV12=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
-                 CAM_MAX_SRC_W, CAM_MAX_SRC_H,
+                 "No modes found in UVC frame list: MJPEG(HW)=%u MJPEG(SW)=%u YUY2=%u NV12=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
                  mjpeg_entries, mjpeg_sw_entries, yuy2_entries, nv12_entries, uyvy_entries, gray8_entries,
                  rgbp_entries, h264_entries, h265_entries, other_entries);
         return;
     }
     // 菜单顺序沿用设备描述符顺序，便于和 UVC frame list 日志一一对应。
     a->selected_mode = default_mode_index(a);
-    ESP_LOGI(TAG, "%u compatible modes, default=%d (%s %ux%u @%.1f)",
-             (unsigned)a->mode_count, a->selected_mode,
-             uvc_format_name(a->modes[a->selected_mode].fmt),
-             a->modes[a->selected_mode].w, a->modes[a->selected_mode].h,
-             a->modes[a->selected_mode].fps);
+    if (a->selected_mode >= 0) {
+        ESP_LOGI(TAG, "%u listed modes, default=%d (%s %ux%u @%.1f)",
+                 (unsigned)a->mode_count, a->selected_mode,
+                 uvc_format_name(a->modes[a->selected_mode].fmt),
+                 a->modes[a->selected_mode].w, a->modes[a->selected_mode].h,
+                 a->modes[a->selected_mode].fps);
+    } else {
+        ESP_LOGW(TAG, "%u listed modes, no selectable default", (unsigned)a->mode_count);
+    }
     for (size_t i = 0; i < a->mode_count; i++) {
         const cam_mode_t *m = &a->modes[i];
-        ESP_LOGI(TAG, "  mode[%u]: %s %ux%u @%.1f fps%s",
+        const char *reason = mode_unavailable_reason(m);
+        ESP_LOGI(TAG, "  mode[%u]: %s %ux%u @%.1f fps%s%s%s%s",
                  (unsigned)i, uvc_format_name(m->fmt), m->w, m->h, m->fps,
+                 reason ? " [" : "",
+                 reason ? reason : "",
+                 reason ? "]" : "",
                  ((int)i == a->selected_mode) ? " [default]" : "");
     }
 

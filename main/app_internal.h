@@ -49,8 +49,8 @@
 // 硬件 JPEG + PPA 可处理的最大源分辨率
 #define CAM_MAX_SRC_W       1920
 #define CAM_MAX_SRC_H       1080
-// 用户可选的最大分辨率上限：超过该上限的模式仍会出现在列表里 (info-only),
-// 但会被 ui_selection 标灰、无法点击；流水线 (JPEG/PPA/SPIRAM 带宽)
+// 用户可选的最大分辨率上限：超过该上限的模式仍会出现在列表里,
+// 但会被 ui_selection 标为 not recommended 且不可启动；流水线 (JPEG/PPA/SPIRAM 带宽)
 // 在 1280x720@MJPEG 已经基本跑满, 更高分辨率几乎肯定 underflow.
 #define CAM_MAX_SELECT_W    1280
 #define CAM_MAX_SELECT_H    720
@@ -345,8 +345,10 @@ const char *uvc_format_name(enum uvc_host_stream_format fmt);
 const char *uvc_stream_event_name(enum uvc_host_dev_event event);
 void log_frame_info(const uvc_host_frame_info_t *fi, size_t index);
 bool mode_is_safe(const cam_mode_t *m);
+bool mode_is_hw_supported(const cam_mode_t *m);
 // 用户是否被允许选中该模式 (受 CAM_MAX_SELECT_W/H 限制).
 bool mode_is_selectable(const cam_mode_t *m);
+const char *mode_unavailable_reason(const cam_mode_t *m);
 void add_mode(app_t *a, unsigned w, unsigned h,
               float fps, enum uvc_host_stream_format fmt);
 int  default_mode_index(const app_t *a);

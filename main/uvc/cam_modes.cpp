@@ -82,13 +82,29 @@ bool mode_is_safe(const cam_mode_t *m)
     return true;
 }
 
+bool mode_is_hw_supported(const cam_mode_t *m)
+{
+    if (!m) return false;
+    return m->w <= CAM_MAX_SRC_W && m->h <= CAM_MAX_SRC_H;
+}
+
 bool mode_is_selectable(const cam_mode_t *m)
 {
     if (!m) return false;
+    if (!mode_is_hw_supported(m)) return false;
     if (m->fmt == UVC_VS_FORMAT_NV12) return false;
     // 超过 1280x720 的模式仅作为信息展示, 不允许用户选择.
     if (m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H) return false;
     return true;
+}
+
+const char *mode_unavailable_reason(const cam_mode_t *m)
+{
+    if (!m) return "mode unavailable";
+    if (!mode_is_hw_supported(m)) return "hardware unsupported";
+    if (m->fmt == UVC_VS_FORMAT_NV12) return "format unsupported";
+    if (m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H) return "not recommended";
+    return nullptr;
 }
 
 static bool mode_exists(const app_t *a, unsigned w, unsigned h,
@@ -108,10 +124,7 @@ void add_mode(app_t *a, unsigned w, unsigned h,
 {
     if (a->mode_count >= CAM_MAX_CANDIDATES) return;
     if (fps <= 0.f) return;
-    // 超过硬件解码/PPA 极限 (1920x1080) 的分辨率绝对无法处理, 仍然不列入,
-    // 但 1280x720 ~ 1920x1080 之间的模式会进入列表用于展示, 由 ui_selection
-    // 把 >1280x720 的项标灰、屏蔽点击.
-    if (w > CAM_MAX_SRC_W || h > CAM_MAX_SRC_H) return;
+    // Keep all advertised modes in the list; UI/startup policy marks unsafe entries.
     if (mode_exists(a, w, h, fps, fmt)) return;
     cam_mode_t *m = &a->modes[a->mode_count++];
     m->w = w; m->h = h; m->fps = fps; m->fmt = fmt;
@@ -123,7 +136,7 @@ int default_mode_index(const app_t *a)
     for (size_t i = 0; i < a->mode_count; i++) {
         if (mode_is_selectable(&a->modes[i])) return (int)i;
     }
-    return 0;
+    return -1;
 }
 
 static int factory_format_priority(enum uvc_host_stream_format fmt)

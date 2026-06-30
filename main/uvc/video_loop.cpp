@@ -129,7 +129,12 @@ static bool stream_open_only(app_t *a, int mode_idx)
         return false;
     }
     const cam_mode_t *m = &a->modes[mode_idx];
-    // 不做分辨率限制
+    const char *reason = mode_unavailable_reason(m);
+    if (reason) {
+        ESP_LOGW(TAG, "stream open rejected: %s %ux%u @%.1f is %s",
+                 uvc_format_name(m->fmt), m->w, m->h, m->fps, reason);
+        return false;
+    }
 
     uvc_host_stream_config_t cfg = {};
     cfg.event_cb    = stream_event_cb;

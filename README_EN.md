@@ -85,7 +85,7 @@ This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as lo
 
 ## Notes And Limits
 
-- Modes above **1280x720** are still listed for inspection, but are marked **view-only** and cannot be started directly.
+- Modes above **1280x720** are still listed for inspection, but are marked **not recommended** and cannot be started directly; modes above the **1920x1080** hardware processing limit are also listed and marked **hardware unsupported**.
 - Advanced controls are intended only for some of my custom UVC firmware builds, not standard UVC cameras; compatible firmware must also advertise the descriptor and respond correctly to UVC `GET_*` / `SET_CUR` transactions.
 - `MJPEG(HW) Quality` is not live-safe and is applied on the next stream start.
 - `REINIT` is ignored while streaming is already active.

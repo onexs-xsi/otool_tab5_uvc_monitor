@@ -256,6 +256,14 @@ static void check_task_entry(void *arg)
     for (int i = 0; i < (int)a->mode_count && a->state == APP_STATE_SELECTING; i++) {
         const cam_mode_t *m = &a->modes[i];
         char text[160];
+        const char *unavailable = mode_unavailable_reason(m);
+        if (unavailable) {
+            snprintf(text, sizeof(text), "SKIP  [%02d] %s %ux%u @%.1f  (%s)",
+                     i, uvc_format_name(m->fmt), m->w, m->h, m->fps, unavailable);
+            ui_check_set_text(row_labels[i], text, lv_color_make(0x94, 0xA3, 0xB8));
+            vTaskDelay(pdMS_TO_TICKS(90));
+            continue;
+        }
         snprintf(text, sizeof(text), "RUN   [%02d] %s %ux%u @%.1f  0/%d", i, uvc_format_name(m->fmt), m->w, m->h, m->fps, CAM_CHECK_ATTEMPTS);
         ui_check_set_text(row_labels[i], text, lv_color_make(0x25, 0x63, 0xEB));
         ui_check_set_text(a->check_status_lbl, "Opening UVC mode...", lv_color_make(0x25, 0x63, 0xEB));
@@ -293,7 +301,10 @@ static void check_task_entry(void *arg)
 
     if (otool_lvgl_port_lock(100)) {
         a->check_running = false;
-        if (a->confirm_btn && a->mode_count > 0) lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
+        if (a->confirm_btn && a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count &&
+            mode_is_selectable(&a->modes[a->selected_mode])) {
+            lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
+        }
         if (a->check_btn && a->mode_count > 0) lv_obj_clear_state(a->check_btn, LV_STATE_DISABLED);
         if (a->check_close_btn) {
             lv_obj_clear_state(a->check_close_btn, LV_STATE_DISABLED);
@@ -366,9 +377,18 @@ static void list_item_cb(lv_event_t *e)
     lv_obj_t *btn = (lv_obj_t *)lv_event_get_target(e);
     int idx = (int)(intptr_t)lv_obj_get_user_data(btn);
     if (idx < 0 || idx >= (int)a->mode_count) return;
-    // 超过选择上限的模式仅可见, 不允许选中.
-    if (!mode_is_selectable(&a->modes[idx])) {
-        ui_set_status(a, "This mode exceeds 1280x720 cap and is view-only");
+    // 不可启动的模式仍可点击，用于解释为什么不能选择.
+    const char *unavailable = mode_unavailable_reason(&a->modes[idx]);
+    if (unavailable) {
+        if (strcmp(unavailable, "not recommended") == 0) {
+            ui_set_status(a, "This mode is not recommended on this hardware");
+        } else if (strcmp(unavailable, "hardware unsupported") == 0) {
+            ui_set_status(a, "This mode is hardware unsupported");
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Mode unavailable: %s", unavailable);
+            ui_set_status(a, msg);
+        }
         return;
     }
 
@@ -391,8 +411,15 @@ static void btn_confirm_cb(lv_event_t *e)
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     if (a->check_running) return;
     if (a->selected_mode < 0 || a->selected_mode >= (int)a->mode_count) return;
-    if (!mode_is_selectable(&a->modes[a->selected_mode])) {
-        ui_set_status(a, "Pick a mode at or below 1280x720 to continue");
+    const char *unavailable = mode_unavailable_reason(&a->modes[a->selected_mode]);
+    if (unavailable) {
+        if (strcmp(unavailable, "not recommended") == 0) {
+            ui_set_status(a, "Pick a recommended mode to continue");
+        } else if (strcmp(unavailable, "hardware unsupported") == 0) {
+            ui_set_status(a, "Pick a hardware supported mode to continue");
+        } else {
+            ui_set_status(a, "Pick a startable mode to continue");
+        }
         return;
     }
     a->uac_selected = a->uac_rx_available && a->uac_switch &&
@@ -1070,9 +1097,10 @@ void ui_populate_mode_list(app_t *a)
 
     for (int i = 0; i < (int)a->mode_count; i++) {
         const cam_mode_t *m = &a->modes[i];
-        const bool selectable = mode_is_selectable(m);
+        const char *unavailable = mode_unavailable_reason(m);
+        const bool selectable = (unavailable == nullptr);
 
-        char res_buf[40];
+        char res_buf[64];
         char fps_buf[24];
         lv_obj_t *btn = lv_button_create(a->list_obj);
         lv_obj_set_width(btn, lv_pct(100));
@@ -1087,7 +1115,7 @@ void ui_populate_mode_list(app_t *a)
         if (selectable) {
             snprintf(res_buf, sizeof(res_buf), "%ux%u", m->w, m->h);
         } else {
-            snprintf(res_buf, sizeof(res_buf), "%ux%u  (>720p, view only)", m->w, m->h);
+            snprintf(res_buf, sizeof(res_buf), "%ux%u  (%s)", m->w, m->h, unavailable);
         }
         lv_obj_t *res_lbl = lv_label_create(btn);
         lv_label_set_text(res_lbl, res_buf);

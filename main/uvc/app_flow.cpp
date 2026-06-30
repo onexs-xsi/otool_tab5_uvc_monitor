@@ -14,6 +14,17 @@ static std::atomic<bool> s_reinit_in_flight{false};
 static const TickType_t kUiUsbPollTicks = pdMS_TO_TICKS(200);
 static const size_t kUsbAddrScanMax = 16;
 
+static bool app_mode_index_startable(const app_t *a, int idx)
+{
+    return a && idx >= 0 && idx < (int)a->mode_count && mode_is_selectable(&a->modes[idx]);
+}
+
+static bool app_has_startable_mode(const app_t *a)
+{
+    if (!a) return false;
+    return default_mode_index(a) >= 0;
+}
+
 static bool usb_addr_present(uint8_t dev_addr)
 {
     if (dev_addr == 0) return false;
@@ -120,15 +131,15 @@ static void app_refresh_connected_selection_ui(app_t *a, const char *status_text
     if (a->status_lbl) {
         const char *text = status_text;
         if (!text) {
-            text = (a->mode_count > 0) ?
+            text = app_has_startable_mode(a) ?
                        "Select mode and press START" :
-                       "Camera connected, no compatible modes";
+                       "Camera connected, no startable modes";
         }
         lv_label_set_text(a->status_lbl, text);
     }
     ui_update_uac_option(a);
     if (a->confirm_btn) {
-        if (a->mode_count > 0 && !a->check_running)
+        if (app_mode_index_startable(a, a->selected_mode) && !a->check_running)
             lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
         else
             lv_obj_add_state(a->confirm_btn, LV_STATE_DISABLED);
@@ -293,8 +304,14 @@ static int app_select_factory_simple_mode(app_t *a)
     int mode_idx = -1;
 #if TAB5_DIAG_FACTORY_MODE_INDEX >= 0
     if (TAB5_DIAG_FACTORY_MODE_INDEX < (int)a->mode_count) {
-        mode_idx = TAB5_DIAG_FACTORY_MODE_INDEX;
-        ESP_LOGW(TAG, "Factory mode override: index=%d", mode_idx);
+        if (mode_is_selectable(&a->modes[TAB5_DIAG_FACTORY_MODE_INDEX])) {
+            mode_idx = TAB5_DIAG_FACTORY_MODE_INDEX;
+            ESP_LOGW(TAG, "Factory mode override: index=%d", mode_idx);
+        } else {
+            ESP_LOGW(TAG, "Factory mode override index %d is not startable: %s",
+                     TAB5_DIAG_FACTORY_MODE_INDEX,
+                     mode_unavailable_reason(&a->modes[TAB5_DIAG_FACTORY_MODE_INDEX]));
+        }
     } else {
         ESP_LOGW(TAG, "Factory mode override index %d out of range, mode_count=%u",
                  TAB5_DIAG_FACTORY_MODE_INDEX, (unsigned)a->mode_count);
@@ -466,7 +483,7 @@ static void app_run_selection_loop(app_t *a)
 
         ui_set_status(a, "Camera connected, reading CONFIGURATION...");
         bool config_preflight_ok = false;
-        if (a->mode_count > 0) {
+        if (app_mode_index_startable(a, a->selected_mode)) {
             config_preflight_ok = probe_stream_configuration(a, a->selected_mode);
         }
 
@@ -481,7 +498,8 @@ static void app_run_selection_loop(app_t *a)
             a,
             config_preflight_ok ?
                 "CONFIGURATION verified from UVC GET_*" :
-                "Select mode and press START");
+                (app_has_startable_mode(a) ? "Select mode and press START" :
+                                             "Camera connected, no startable modes"));
 
         // 等待用户确认、设备断开、热插拔重连，或稍后检测到 UAC。
         while (true) {
@@ -513,7 +531,7 @@ static void app_run_selection_loop(app_t *a)
                 ESP_LOGI(TAG, "Hot-plug: device reconnected, verifying CONFIGURATION");
                 ui_set_status(a, "Camera reconnected, reading CONFIGURATION...");
                 bool hotplug_config_ok = false;
-                if (a->mode_count > 0) {
+                if (app_mode_index_startable(a, a->selected_mode)) {
                     hotplug_config_ok = probe_stream_configuration(a, a->selected_mode);
                 }
                 if ((xEventGroupGetBits(a->events) & EV_DEV_LOST) ||
@@ -526,7 +544,8 @@ static void app_run_selection_loop(app_t *a)
                     a,
                     hotplug_config_ok ?
                         "CONFIGURATION verified from UVC GET_*" :
-                        "Select mode and press START");
+                        (app_has_startable_mode(a) ? "Select mode and press START" :
+                                                     "Camera connected, no startable modes"));
                 continue;
             }
             if (bits & EV_USER_CONFIRMED) {
