@@ -43,9 +43,10 @@ enum uvc_host_stream_format {
     UVC_VS_FORMAT_DEFAULT = 0, /*!< Device default format. */
     UVC_VS_FORMAT_MJPEG,       /*!< MJPEG stream format. */
     UVC_VS_FORMAT_YUY2,        /*!< YUY2 stream format. */
-    UVC_VS_FORMAT_RGBP,        /*!< RGB565 LE (RGBP FOURCC) stream format. */
     UVC_VS_FORMAT_H264,        /*!< H.264 stream format. */
     UVC_VS_FORMAT_H265,        /*!< H.265 stream format. */
+    UVC_VS_FORMAT_NV12,        /*!< NV12 stream format. */
+    UVC_VS_FORMAT_RGBP,        /*!< RGB565 LE (RGBP FOURCC) stream format. */
     UVC_VS_FORMAT_UYVY,        /*!< UYVY stream format. */
     UVC_VS_FORMAT_GRAY8,       /*!< 8-bit grayscale (Y800/GREY) stream format. */
     UVC_VS_FORMAT_MJPEG_SW,    /*!< Standard MJPEG payload produced by the device software encoder. */

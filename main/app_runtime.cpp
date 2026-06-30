@@ -73,6 +73,15 @@ static bool app_init_board_and_tab5(app_t *a)
         return false;
     }
 
+    if (TAB5_DIAG_CYCLE_USB5V_ON_BOOT) {
+        ESP_LOGW(TAG, "USB5V diagnostic power-cycle enabled");
+        err = app_usb5v_set(false, "diagnostic boot cycle");
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "usb5v off: %s", esp_err_to_name(err));
+        }
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
+
     err = app_usb5v_set(true, "startup");
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "usb5v: %s", esp_err_to_name(err));

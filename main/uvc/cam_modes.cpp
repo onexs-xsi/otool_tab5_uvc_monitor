@@ -22,6 +22,7 @@ const char *uvc_format_name(enum uvc_host_stream_format fmt)
     case UVC_VS_FORMAT_MJPEG:    return "MJPEG(HW)";
     case UVC_VS_FORMAT_MJPEG_SW: return "MJPEG(SW)";
     case UVC_VS_FORMAT_YUY2:    return "YUY2";
+    case UVC_VS_FORMAT_NV12:    return "NV12";
     case UVC_VS_FORMAT_UYVY:    return "UYVY";
     case UVC_VS_FORMAT_GRAY8:   return "GRAY8";
     case UVC_VS_FORMAT_RGBP:    return "RGBP";
@@ -84,6 +85,7 @@ bool mode_is_safe(const cam_mode_t *m)
 bool mode_is_selectable(const cam_mode_t *m)
 {
     if (!m) return false;
+    if (m->fmt == UVC_VS_FORMAT_NV12) return false;
     // 超过 1280x720 的模式仅作为信息展示, 不允许用户选择.
     if (m->w > CAM_MAX_SELECT_W || m->h > CAM_MAX_SELECT_H) return false;
     return true;
@@ -177,6 +179,7 @@ int factory_simple_mode_index(const app_t *a)
         const cam_mode_t *m = &a->modes[i];
         // 产线简洁模式只自动选择可显示的彩色格式。
         // GRAY8 是黑白，H264/H265 当前显示链路不可解码，因此不作为自动候选。
+        if (!mode_is_selectable(m)) continue;
         if (factory_mode_better(m, best)) {
             best = m;
             best_index = (int)i;

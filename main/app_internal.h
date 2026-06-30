@@ -76,6 +76,7 @@
 #define CAM_CHECK_ATTEMPTS  5
 #define CAM_CHECK_FRAME_TIMEOUT_MS 1500
 #define CAM_FPS_REPORT_INTERVAL_MS 10000
+#define CAM_STREAM_OPEN_SETTLE_MS 8000
 #define CAM_FRAME_BUF_ADAPT_FIRST (256 * 1024)
 #define CAM_FRAME_BUF_ADAPT_STEP  (128 * 1024)
 #define CAM_FRAME_BUF_ADAPT_MAX   (512 * 1024)
@@ -163,6 +164,7 @@ typedef enum {
     APP_STARTUP_MODE_DEFAULT = 0,
     APP_STARTUP_MODE_FACTORY_SIMPLE,
     APP_STARTUP_MODE_FACTORY_SIMPLE_AUTO_REBOOT,
+    APP_STARTUP_MODE_FACTORY_SIMPLE_DMDP_REINIT_TEST,
 } app_startup_mode_t;
 
 typedef enum {
@@ -203,6 +205,7 @@ typedef struct {
     // UVC 设备信息
     uint8_t                 dev_addr;
     uint8_t                 stream_idx;
+    uint32_t                uvc_connected_ms;
     cam_mode_t              modes[CAM_MAX_CANDIDATES];
     size_t                  mode_count;
 

@@ -245,6 +245,7 @@ static const char *factory_short_format_name(enum uvc_host_stream_format fmt)
     case UVC_VS_FORMAT_MJPEG: return "MJPEG";
     case UVC_VS_FORMAT_MJPEG_SW: return "MJPEGSW";
     case UVC_VS_FORMAT_YUY2: return "YUY2";
+    case UVC_VS_FORMAT_NV12: return "NV12";
     case UVC_VS_FORMAT_UYVY: return "UYVY";
     case UVC_VS_FORMAT_RGBP: return "RGBP";
     default: return "VIDEO";

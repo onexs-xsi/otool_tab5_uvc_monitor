@@ -27,11 +27,21 @@ idf_component_register(SRCS "main.cpp"
                         esp_driver_jpeg
                         usb)
 
-set(TAB5_APP_VERSION "1.0.1" CACHE STRING "OTool Tab5 UVC Monitor firmware version")
+set(TAB5_APP_VERSION "1.2.1" CACHE STRING "OTool Tab5 UVC Monitor firmware version")
 string(TIMESTAMP TAB5_APP_BUILD_TIME "%Y%m%d_%H%M%S")
 set(TAB5_APP_VERSION_BUILD "v${TAB5_APP_VERSION}_${TAB5_APP_BUILD_TIME}")
+option(TAB5_DIAG_DISABLE_UAC_HOST "Skip UAC host install for UVC control-transfer diagnosis" OFF)
+option(TAB5_DIAG_FACTORY_AUTO_START "Use factory simple auto-start mode for serial-only diagnosis" OFF)
+option(TAB5_DIAG_CYCLE_USB5V_ON_BOOT "Power-cycle USB 5V during boot for camera diagnosis" OFF)
+option(TAB5_DIAG_FACTORY_DEFAULT_MODE "Use the normal default selectable mode in factory diagnostic mode" OFF)
+set(TAB5_DIAG_STREAM_OPEN_DELAY_MS "0" CACHE STRING "Diagnostic delay before uvc_host_stream_open")
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     TAB5_APP_VERSION="${TAB5_APP_VERSION}"
     TAB5_APP_BUILD_TIME="${TAB5_APP_BUILD_TIME}"
-    TAB5_APP_VERSION_BUILD="${TAB5_APP_VERSION_BUILD}")
+    TAB5_APP_VERSION_BUILD="${TAB5_APP_VERSION_BUILD}"
+    TAB5_DIAG_DISABLE_UAC_HOST=$<BOOL:${TAB5_DIAG_DISABLE_UAC_HOST}>
+    TAB5_DIAG_FACTORY_AUTO_START=$<BOOL:${TAB5_DIAG_FACTORY_AUTO_START}>
+    TAB5_DIAG_CYCLE_USB5V_ON_BOOT=$<BOOL:${TAB5_DIAG_CYCLE_USB5V_ON_BOOT}>
+    TAB5_DIAG_FACTORY_DEFAULT_MODE=$<BOOL:${TAB5_DIAG_FACTORY_DEFAULT_MODE}>
+    TAB5_DIAG_STREAM_OPEN_DELAY_MS=${TAB5_DIAG_STREAM_OPEN_DELAY_MS})

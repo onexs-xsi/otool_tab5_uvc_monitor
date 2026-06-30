@@ -93,6 +93,7 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     a->dev_addr    = addr;
     a->stream_idx  = sidx;
+    a->uvc_connected_ms = (uint32_t)esp_log_timestamp();
     a->mode_count  = 0;
 
     // 先从 VC 描述符解析 PU/XU bmControls 作为候选；
@@ -105,6 +106,7 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
     unsigned uyvy_entries = 0;
     unsigned gray8_entries = 0;
     unsigned rgbp_entries = 0;
+    unsigned nv12_entries = 0;
     unsigned h264_entries = 0;
     unsigned h265_entries = 0;
     unsigned other_entries = 0;
@@ -119,6 +121,7 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
         case UVC_VS_FORMAT_UYVY:  uyvy_entries++; break;
         case UVC_VS_FORMAT_GRAY8: gray8_entries++; break;
         case UVC_VS_FORMAT_RGBP:  rgbp_entries++; break;
+        case UVC_VS_FORMAT_NV12:  nv12_entries++; break;
         case UVC_VS_FORMAT_H264:  h264_entries++; break;
         case UVC_VS_FORMAT_H265:  h265_entries++; break;
         default:                  other_entries++; break;
@@ -150,9 +153,9 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     if (a->mode_count == 0) {
         ESP_LOGW(TAG,
-                 "No modes found within hw limit %ux%u: MJPEG(HW)=%u MJPEG(SW)=%u YUY2=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
+                 "No modes found within hw limit %ux%u: MJPEG(HW)=%u MJPEG(SW)=%u YUY2=%u NV12=%u UYVY=%u GRAY8=%u RGBP=%u H264=%u H265=%u other=%u",
                  CAM_MAX_SRC_W, CAM_MAX_SRC_H,
-                 mjpeg_entries, mjpeg_sw_entries, yuy2_entries, uyvy_entries, gray8_entries,
+                 mjpeg_entries, mjpeg_sw_entries, yuy2_entries, nv12_entries, uyvy_entries, gray8_entries,
                  rgbp_entries, h264_entries, h265_entries, other_entries);
         return;
     }

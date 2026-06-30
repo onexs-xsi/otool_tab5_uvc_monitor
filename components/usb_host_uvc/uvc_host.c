@@ -41,6 +41,8 @@ portMUX_TYPE uvc_lock = portMUX_INITIALIZER_UNLOCKED;
 #define UVC_STARTED           BIT0 // UVC driver events handling started
 #define UVC_TEARDOWN          BIT1 // UVC is being uninstalled
 #define UVC_TEARDOWN_COMPLETE BIT2 // UVC uninstall finished
+#define UVC_CTRL_XFER_TIMEOUT_MS 5000
+#define UVC_CTRL_XFER_CLOSE_WAIT_MS 1000
 
 // Transfer callbacks
 static void ctrl_xfer_cb(usb_transfer_t *transfer);
@@ -54,6 +56,9 @@ typedef struct {
     EventGroupHandle_t driver_status;           /*!< Holds status of the driver */
     usb_transfer_t *ctrl_transfer;              /*!< CTRL (endpoint 0) transfer */
     SemaphoreHandle_t ctrl_mutex;               /*!< CTRL mutex */
+    volatile bool ctrl_transfer_pending;        /*!< CTRL transfer was submitted and callback has not run yet */
+    volatile bool ctrl_transfer_timed_out;      /*!< CTRL transfer wait timed out while the URB may still be in flight */
+    usb_device_handle_t ctrl_transfer_dev_hdl;  /*!< USB device handle currently owning the CTRL transfer */
     uvc_host_driver_event_callback_t user_cb;   /*!< Callback function to handle events */
     void *user_ctx;
     SLIST_HEAD(list_dev, uvc_host_stream_s) uvc_stream_list;   /*!< List of open streams */
@@ -394,6 +399,82 @@ static void uvc_transfers_free(uvc_stream_t *uvc_stream)
     uvc_stream->constant.num_of_xfers = 0;
 }
 
+static void uvc_ctrl_mark_done(uvc_host_driver_t *driver)
+{
+    if (!driver) {
+        return;
+    }
+
+    UVC_ENTER_CRITICAL();
+    driver->ctrl_transfer_pending = false;
+    driver->ctrl_transfer_timed_out = false;
+    driver->ctrl_transfer_dev_hdl = NULL;
+    UVC_EXIT_CRITICAL();
+}
+
+static bool uvc_ctrl_pending_for_device(uvc_host_driver_t *driver, usb_device_handle_t dev_hdl)
+{
+    if (!driver || !dev_hdl) {
+        return false;
+    }
+
+    UVC_ENTER_CRITICAL();
+    const bool pending = driver->ctrl_transfer_pending && driver->ctrl_transfer_dev_hdl == dev_hdl;
+    UVC_EXIT_CRITICAL();
+    return pending;
+}
+
+static void uvc_ctrl_settle_after_completion(void)
+{
+    // Let USB host finish its post-callback bookkeeping before the transfer is reused
+    // or the device is closed from another task.
+    vTaskDelay(1);
+}
+
+static bool uvc_ctrl_collect_done_if_ready(uvc_host_driver_t *driver)
+{
+    if (!driver || !driver->ctrl_transfer_pending) {
+        return true;
+    }
+
+    const BaseType_t done = xSemaphoreTake((SemaphoreHandle_t)driver->ctrl_transfer->context, 0);
+    if (done != pdTRUE) {
+        return false;
+    }
+
+    uvc_ctrl_mark_done(driver);
+    uvc_ctrl_settle_after_completion();
+    return true;
+}
+
+static bool uvc_ctrl_wait_idle_for_device(usb_device_handle_t dev_hdl, TickType_t wait_ticks)
+{
+    uvc_host_driver_t *driver = UVC_ATOMIC_LOAD(p_uvc_host_driver);
+    if (!driver || !dev_hdl || !uvc_ctrl_pending_for_device(driver, dev_hdl)) {
+        return true;
+    }
+
+    if (xSemaphoreTake(driver->ctrl_mutex, wait_ticks) != pdTRUE) {
+        ESP_LOGW(TAG, "CTRL transfer still busy while removing UVC device");
+        return false;
+    }
+
+    bool idle = true;
+    if (uvc_ctrl_pending_for_device(driver, dev_hdl)) {
+        ESP_LOGW(TAG, "Waiting for timed-out CTRL transfer before closing USB device");
+        const BaseType_t done = xSemaphoreTake((SemaphoreHandle_t)driver->ctrl_transfer->context, wait_ticks);
+        if (done == pdTRUE) {
+            uvc_ctrl_mark_done(driver);
+            uvc_ctrl_settle_after_completion();
+        } else {
+            idle = false;
+        }
+    }
+
+    xSemaphoreGive(driver->ctrl_mutex);
+    return idle;
+}
+
 /**
  * @brief Allocate UVC transfers
  *
@@ -485,10 +566,17 @@ err:
 static void uvc_device_remove(uvc_stream_t *uvc_stream)
 {
     assert(uvc_stream);
+    usb_device_handle_t dev_hdl = uvc_stream->constant.dev_hdl;
     uvc_transfers_free(uvc_stream);
     uvc_frame_free(uvc_stream);
-    // We don't check the error code of usb_host_device_close, as the close might fail, if someone else is still using the device (not all interfaces are released)
-    usb_host_device_close(p_uvc_host_driver->usb_client_hdl, uvc_stream->constant.dev_hdl); // Gracefully continue on error
+
+    if (uvc_ctrl_wait_idle_for_device(dev_hdl, pdMS_TO_TICKS(UVC_CTRL_XFER_CLOSE_WAIT_MS))) {
+        uvc_ctrl_settle_after_completion();
+        // We don't check the error code of usb_host_device_close, as the close might fail, if someone else is still using the device (not all interfaces are released)
+        usb_host_device_close(p_uvc_host_driver->usb_client_hdl, dev_hdl); // Gracefully continue on error
+    } else {
+        ESP_LOGE(TAG, "Skip USB device close because CTRL transfer is still in flight; reinit the USB device before retrying");
+    }
     free(uvc_stream);
 }
 
@@ -1177,16 +1265,29 @@ esp_err_t uvc_host_usb_ctrl(uvc_host_stream_hdl_t stream_hdl, uint8_t bmRequestT
     if (wLength > 0) {
         UVC_CHECK(data, ESP_ERR_INVALID_ARG);
     }
-    UVC_CHECK(p_uvc_host_driver->ctrl_transfer->data_buffer_size >= wLength, ESP_ERR_INVALID_SIZE);
+    uvc_host_driver_t *driver = UVC_ATOMIC_LOAD(p_uvc_host_driver);
+    UVC_CHECK(driver, ESP_ERR_INVALID_STATE);
+    UVC_CHECK(driver->ctrl_transfer->data_buffer_size >= wLength, ESP_ERR_INVALID_SIZE);
 
     esp_err_t ret;
 
     // Take Mutex and fill the CTRL request
-    BaseType_t taken = xSemaphoreTake(p_uvc_host_driver->ctrl_mutex, pdMS_TO_TICKS(5000));
+    BaseType_t taken = xSemaphoreTake(driver->ctrl_mutex, pdMS_TO_TICKS(UVC_CTRL_XFER_TIMEOUT_MS));
     if (!taken) {
         return ESP_ERR_TIMEOUT;
     }
-    usb_setup_packet_t *req = (usb_setup_packet_t *)(p_uvc_host_driver->ctrl_transfer->data_buffer);
+
+    if (!uvc_ctrl_collect_done_if_ready(driver)) {
+        ESP_LOGW(TAG, "Previous CTRL transfer is still in flight");
+        ret = ESP_ERR_INVALID_STATE;
+        goto unblock;
+    }
+
+    while (xSemaphoreTake((SemaphoreHandle_t)driver->ctrl_transfer->context, 0) == pdTRUE) {
+        // Drain stale completion signals from transfers that timed out in the caller.
+    }
+
+    usb_setup_packet_t *req = (usb_setup_packet_t *)(driver->ctrl_transfer->data_buffer);
     uint8_t *start_of_data = (uint8_t *)req + sizeof(usb_setup_packet_t);
     req->bmRequestType = bmRequestType;
     req->bRequest = bRequest;
@@ -1195,8 +1296,8 @@ esp_err_t uvc_host_usb_ctrl(uvc_host_stream_hdl_t stream_hdl, uint8_t bmRequestT
     req->wLength = wLength;
 
     // Bind the transfer and the device
-    p_uvc_host_driver->ctrl_transfer->device_handle = stream_hdl->constant.dev_hdl;
-    p_uvc_host_driver->ctrl_transfer->num_bytes = wLength + sizeof(usb_setup_packet_t);
+    driver->ctrl_transfer->device_handle = stream_hdl->constant.dev_hdl;
+    driver->ctrl_transfer->num_bytes = wLength + sizeof(usb_setup_packet_t);
 
     // For IN transfers we must transfer data ownership to the driver
     const bool in_transfer = bmRequestType & USB_BM_REQUEST_TYPE_DIR_IN;
@@ -1204,14 +1305,48 @@ esp_err_t uvc_host_usb_ctrl(uvc_host_stream_hdl_t stream_hdl, uint8_t bmRequestT
         memcpy(start_of_data, data, wLength);
     }
 
-    ESP_GOTO_ON_ERROR(
-        usb_host_transfer_submit_control(p_uvc_host_driver->usb_client_hdl, p_uvc_host_driver->ctrl_transfer),
-        unblock, TAG, "CTRL transfer failed");
+    UVC_ENTER_CRITICAL();
+    driver->ctrl_transfer_pending = true;
+    driver->ctrl_transfer_timed_out = false;
+    driver->ctrl_transfer_dev_hdl = stream_hdl->constant.dev_hdl;
+    UVC_EXIT_CRITICAL();
 
-    taken = xSemaphoreTake((SemaphoreHandle_t)p_uvc_host_driver->ctrl_transfer->context, pdMS_TO_TICKS(5000)); // This is a fixed timeout. Every device should be able to respond to CTRL transfer in 5 seconds
-    ESP_GOTO_ON_FALSE(taken, ESP_ERR_TIMEOUT, unblock, TAG, "CTRL timeout");
-    ESP_GOTO_ON_FALSE(p_uvc_host_driver->ctrl_transfer->status == USB_TRANSFER_STATUS_COMPLETED, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Control transfer error");
-    ESP_GOTO_ON_FALSE(p_uvc_host_driver->ctrl_transfer->actual_num_bytes == p_uvc_host_driver->ctrl_transfer->num_bytes, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Incorrect number of bytes transferred");
+#if TAB5_DIAG_CTRL_TRACE
+    ESP_LOGI(TAG, "CTRL submit: req_type=0x%02x req=0x%02x value=0x%04x index=0x%04x len=%u",
+             bmRequestType, bRequest, wValue, wIndex, (unsigned)wLength);
+#endif
+    ret = usb_host_transfer_submit_control(driver->usb_client_hdl, driver->ctrl_transfer);
+    if (ret != ESP_OK) {
+        if (ret != ESP_ERR_NOT_FINISHED) {
+            uvc_ctrl_mark_done(driver);
+        } else {
+            UVC_ENTER_CRITICAL();
+            driver->ctrl_transfer_timed_out = true;
+            UVC_EXIT_CRITICAL();
+        }
+        ESP_LOGE(TAG, "CTRL transfer failed");
+        goto unblock;
+    }
+
+    taken = xSemaphoreTake((SemaphoreHandle_t)driver->ctrl_transfer->context, pdMS_TO_TICKS(UVC_CTRL_XFER_TIMEOUT_MS)); // This is a fixed timeout. Every device should be able to respond to CTRL transfer in 5 seconds
+    if (!taken) {
+        UVC_ENTER_CRITICAL();
+        driver->ctrl_transfer_timed_out = true;
+        UVC_EXIT_CRITICAL();
+        ESP_LOGE(TAG, "CTRL timeout, transfer may still be in flight");
+        ret = ESP_ERR_TIMEOUT;
+        goto unblock;
+    }
+    uvc_ctrl_mark_done(driver);
+    uvc_ctrl_settle_after_completion();
+#if TAB5_DIAG_CTRL_TRACE
+    ESP_LOGI(TAG, "CTRL done: status=%d actual=%d expected=%d",
+             driver->ctrl_transfer->status,
+             driver->ctrl_transfer->actual_num_bytes,
+             driver->ctrl_transfer->num_bytes);
+#endif
+    ESP_GOTO_ON_FALSE(driver->ctrl_transfer->status == USB_TRANSFER_STATUS_COMPLETED, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Control transfer error");
+    ESP_GOTO_ON_FALSE(driver->ctrl_transfer->actual_num_bytes == driver->ctrl_transfer->num_bytes, ESP_ERR_INVALID_RESPONSE, unblock, TAG, "Incorrect number of bytes transferred");
 
     // For OUT transfers, we must transfer data ownership to user
     if (in_transfer) {
@@ -1220,7 +1355,7 @@ esp_err_t uvc_host_usb_ctrl(uvc_host_stream_hdl_t stream_hdl, uint8_t bmRequestT
     ret = ESP_OK;
 
 unblock:
-    xSemaphoreGive(p_uvc_host_driver->ctrl_mutex);
+    xSemaphoreGive(driver->ctrl_mutex);
     return ret;
 }
 

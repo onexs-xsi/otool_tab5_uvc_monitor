@@ -136,6 +136,27 @@ static bool stream_open_only(app_t *a, int mode_idx)
     cfg.advanced.number_of_urbs          = CAM_URB_CNT;
     cfg.advanced.urb_size                = CAM_URB_SIZE;
 
+#if CAM_STREAM_OPEN_SETTLE_MS > 0
+    if (a->uvc_connected_ms != 0) {
+        const uint32_t now_ms = (uint32_t)esp_log_timestamp();
+        const uint32_t elapsed_ms = now_ms - a->uvc_connected_ms;
+        if (elapsed_ms < CAM_STREAM_OPEN_SETTLE_MS) {
+            const uint32_t wait_ms = CAM_STREAM_OPEN_SETTLE_MS - elapsed_ms;
+            ESP_LOGW(TAG, "Waiting %u ms for UVC device to settle before stream control", (unsigned)wait_ms);
+            vTaskDelay(pdMS_TO_TICKS(wait_ms));
+            if (a->events && (xEventGroupGetBits(a->events) & EV_DEV_LOST)) {
+                ESP_LOGW(TAG, "Skip stream open because device was lost during settle wait");
+                return false;
+            }
+        }
+    }
+#endif
+
+#if TAB5_DIAG_STREAM_OPEN_DELAY_MS > 0
+    ESP_LOGW(TAG, "Diagnostic delay before stream open: %d ms", TAB5_DIAG_STREAM_OPEN_DELAY_MS);
+    vTaskDelay(pdMS_TO_TICKS(TAB5_DIAG_STREAM_OPEN_DELAY_MS));
+#endif
+
     ESP_LOGI(TAG,
              "Opening stream: addr=%u stream=%u fmt=%s %ux%u @%.1f frame_buffers=%d frame_size=%s(%u) urbs=%d urb_size=%u heap_caps=0x%lx",
              a->dev_addr, a->stream_idx, uvc_format_name(m->fmt), m->w, m->h, m->fps,

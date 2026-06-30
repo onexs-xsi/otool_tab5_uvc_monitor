@@ -55,6 +55,7 @@ static void app_reset_connected_device_state(app_t *a)
     a->selected_mode = 0;
     a->dev_addr = 0;
     a->stream_idx = 0;
+    a->uvc_connected_ms = 0;
     a->stream_restart_requested = false;
     a->uvc_frame_size_override = 0;
     a->stream_restart_count = 0;
@@ -259,20 +260,25 @@ bool app_uvc_host_services_init(app_t *a)
         return false;
     }
 
-    uac_host_driver_config_t acfg = {};
-    acfg.create_background_task = true;
-    acfg.task_priority = USB_LIB_TASK_PRIO - 2;
-    acfg.stack_size = 4096;
-    acfg.core_id = 1;
-    acfg.callback = uac_driver_event_cb;
-    acfg.callback_arg = a;
-    err = uac_host_install(&acfg);
-    if (err == ESP_OK) {
-        a->uac_driver_ready = true;
-        ESP_LOGI(TAG, "UAC host installed");
-    } else {
+    if (TAB5_DIAG_DISABLE_UAC_HOST) {
         a->uac_driver_ready = false;
-        ESP_LOGW(TAG, "uac_host_install failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "UAC host install skipped by TAB5_DIAG_DISABLE_UAC_HOST");
+    } else {
+        uac_host_driver_config_t acfg = {};
+        acfg.create_background_task = true;
+        acfg.task_priority = USB_LIB_TASK_PRIO - 2;
+        acfg.stack_size = 4096;
+        acfg.core_id = 1;
+        acfg.callback = uac_driver_event_cb;
+        acfg.callback_arg = a;
+        err = uac_host_install(&acfg);
+        if (err == ESP_OK) {
+            a->uac_driver_ready = true;
+            ESP_LOGI(TAG, "UAC host installed");
+        } else {
+            a->uac_driver_ready = false;
+            ESP_LOGW(TAG, "uac_host_install failed: %s", esp_err_to_name(err));
+        }
     }
     return true;
 }
@@ -281,7 +287,9 @@ static int app_select_factory_simple_mode(app_t *a)
 {
     if (!a || a->mode_count == 0) return -1;
 
-    const int mode_idx = factory_simple_mode_index(a);
+    const int mode_idx = TAB5_DIAG_FACTORY_DEFAULT_MODE ?
+                         default_mode_index(a) :
+                         factory_simple_mode_index(a);
     if (mode_idx < 0) {
         ESP_LOGW(TAG, "Factory mode: no supported color stream mode");
         return -1;

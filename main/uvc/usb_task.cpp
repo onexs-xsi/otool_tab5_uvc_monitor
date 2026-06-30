@@ -239,7 +239,12 @@ void cam_ctrl_probe_all(app_t *a)
 {
     if (!a || !a->stream_hdl) return;
     int ok_cnt = 0;
+    int candidate_cnt = 0;
     for (size_t i = 0; i < CAM_ADV_CTRL_COUNT; i++) {
+        if (!a->adv_caps[i].supported) {
+            continue;
+        }
+        candidate_cnt++;
         int32_t prev_cur = a->adv_caps[i].v_cur;
         bool had_pending_apply = a->adv_caps[i].pending_apply;
         cam_ctrl_probe_one(a->stream_hdl, &a->adv_caps[i]);
@@ -259,7 +264,7 @@ void cam_ctrl_probe_all(app_t *a)
         }
     }
     a->adv_caps_probed = true;
-    ESP_LOGI(TAG, "ctrl verify: %d/%d controls responded to GET_*", ok_cnt, (int)CAM_ADV_CTRL_COUNT);
+    ESP_LOGI(TAG, "ctrl verify: %d/%d advertised controls responded to GET_*", ok_cnt, candidate_cnt);
 
     // 打印传感器实际支持的高级控件列表
     {

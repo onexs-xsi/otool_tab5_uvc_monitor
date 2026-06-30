@@ -7,6 +7,7 @@
 
 #include <string.h> // For memset
 #include <math.h>   // fabsf for float comparison
+#include <inttypes.h>
 
 #include "esp_check.h"
 
@@ -23,12 +24,33 @@ static const char *TAG = "uvc-control";
 
 static uint16_t uvc_vs_control_size(uint16_t uvc_version)
 {
+    if (TAB5_DIAG_FORCE_PROBE_LEN > 0) {
+        ESP_LOGW(TAG, "Forcing UVC VS control size to %u by TAB5_DIAG_FORCE_PROBE_LEN",
+                 (unsigned)TAB5_DIAG_FORCE_PROBE_LEN);
+        return TAB5_DIAG_FORCE_PROBE_LEN;
+    }
+
     if (uvc_version < UVC_VERSION_1_1) {
         return 26;
     } else if (uvc_version < UVC_VERSION_1_5) {
         return 34;
     } else {
         return 48;
+    }
+}
+
+static const char *uvc_request_name(enum uvc_req_code req_code)
+{
+    switch (req_code) {
+    case UVC_SET_CUR: return "SET_CUR";
+    case UVC_GET_CUR: return "GET_CUR";
+    case UVC_GET_MIN: return "GET_MIN";
+    case UVC_GET_MAX: return "GET_MAX";
+    case UVC_GET_RES: return "GET_RES";
+    case UVC_GET_LEN: return "GET_LEN";
+    case UVC_GET_INFO: return "GET_INFO";
+    case UVC_GET_DEF: return "GET_DEF";
+    default: return "UNKNOWN";
     }
 }
 
@@ -82,18 +104,48 @@ static esp_err_t uvc_host_stream_control(uvc_host_stream_hdl_t stream_hdl, uvc_v
         }
     }
 
+    ESP_LOGI(TAG,
+             "%s %s submit: iface=%u bcdUVC=0x%04x wLen=%u fmt=%u frame=%u interval=%"PRIu32" max_frame=%"PRIu32" max_payload=%"PRIu32,
+             commit ? "COMMIT" : "PROBE", uvc_request_name(req_code),
+             (unsigned)uvc_stream->constant.bInterfaceNumber, uvc_stream->constant.bcdUVC,
+             (unsigned)wLength, vs_control->bFormatIndex, vs_control->bFrameIndex,
+             vs_control->dwFrameInterval, vs_control->dwMaxVideoFrameSize, vs_control->dwMaxPayloadTransferSize);
+
     // Issue CTRL request
     ESP_RETURN_ON_ERROR(
         uvc_host_usb_ctrl(stream_hdl, bmRequestType, bRequest, wValue, wIndex, wLength, (uint8_t *)vs_control),
         TAG, "Control request failed");
 
+    ESP_LOGI(TAG,
+             "%s %s done: iface=%u fmt=%u frame=%u interval=%"PRIu32" max_frame=%"PRIu32" max_payload=%"PRIu32,
+             commit ? "COMMIT" : "PROBE", uvc_request_name(req_code),
+             (unsigned)uvc_stream->constant.bInterfaceNumber, vs_control->bFormatIndex, vs_control->bFrameIndex,
+             vs_control->dwFrameInterval, vs_control->dwMaxVideoFrameSize, vs_control->dwMaxPayloadTransferSize);
+
     if (!set) {
         // Get Video Stream control parameters from the received data and parse it to user
         const uvc_format_desc_t *format_desc = NULL;
         const uvc_frame_desc_t *frame_desc = NULL;
-        ESP_RETURN_ON_ERROR(
-            uvc_desc_get_frame_format_by_index(cfg_desc, uvc_stream->constant.bInterfaceNumber, vs_control->bFormatIndex, vs_control->bFrameIndex, &format_desc, &frame_desc),
-            TAG, "Could not find requested frame format");
+        ret = uvc_desc_get_frame_format_by_index(cfg_desc,
+                                                 uvc_stream->constant.bInterfaceNumber,
+                                                 vs_control->bFormatIndex,
+                                                 vs_control->bFrameIndex,
+                                                 &format_desc,
+                                                 &frame_desc);
+        if (ret != ESP_OK) {
+            if (req_code == UVC_GET_MIN || req_code == UVC_GET_MAX) {
+                ESP_LOGW(TAG,
+                         "%s returned unlisted frame format: fmt=%u frame=%u",
+                         uvc_request_name(req_code), vs_control->bFormatIndex,
+                         vs_control->bFrameIndex);
+            } else {
+                ESP_LOGE(TAG,
+                         "Could not find requested frame format: req=%s fmt=%u frame=%u",
+                         uvc_request_name(req_code), vs_control->bFormatIndex,
+                         vs_control->bFrameIndex);
+            }
+            return ret;
+        }
 
         vs_format->format = uvc_desc_parse_format(format_desc);
         vs_format->h_res  = frame_desc->wWidth;
@@ -145,16 +197,37 @@ esp_err_t uvc_host_stream_control_probe(uvc_host_stream_hdl_t stream_hdl, uvc_ho
 
     esp_err_t ret;
     uvc_vs_ctrl_t vs_result = {0};
-    uvc_host_stream_format_t default_format;
+    uvc_host_stream_format_t default_format = {0};
+    bool default_format_valid = false;
 
     // Notes: Some cameras require 'probe_get' to be the 1st negotiation call
     // It returns 'default' format and frame settings which will be used if requested format is UVC_VS_FORMAT_DEFAULT
-    uvc_control_probe_get(stream_hdl, &vs_result, &default_format);
+    if (TAB5_DIAG_SKIP_INITIAL_PROBE_GET) {
+        ESP_LOGW(TAG, "Skipping initial PROBE GET_CUR by TAB5_DIAG_SKIP_INITIAL_PROBE_GET");
+    } else {
+        ret = uvc_control_probe_get(stream_hdl, &vs_result, &default_format);
+        if (ret == ESP_OK) {
+            default_format_valid = true;
+            ESP_LOGI(TAG, "Default format from camera: %dx%d@%2.1fFPS, fmt=%d, frame_size=%"PRIu32", payload=%"PRIu32,
+                     default_format.h_res, default_format.v_res, default_format.fps, default_format.format,
+                     vs_result.dwMaxVideoFrameSize, vs_result.dwMaxPayloadTransferSize);
+        } else {
+            ESP_LOGW(TAG, "Default probe GET_CUR failed: %s, raw fmt=%u frame=%u interval=%"PRIu32" frame_size=%"PRIu32" payload=%"PRIu32,
+                     esp_err_to_name(ret), vs_result.bFormatIndex, vs_result.bFrameIndex, vs_result.dwFrameInterval,
+                     vs_result.dwMaxVideoFrameSize, vs_result.dwMaxPayloadTransferSize);
+            return ret;
+        }
+    }
+
     if (requested_format->format == UVC_VS_FORMAT_DEFAULT) {
+        UVC_CHECK(default_format_valid, ESP_ERR_INVALID_STATE);
         memcpy(requested_format, &default_format, sizeof(uvc_host_stream_format_t));
     }
 
-    uvc_control_probe_set(stream_hdl, &vs_result, requested_format); // Set the requested frame format
+    ret = uvc_control_probe_set(stream_hdl, &vs_result, requested_format); // Set the requested frame format
+    if (ret != ESP_OK) {
+        return ret;
+    }
     ret = uvc_control_probe_get(stream_hdl, &vs_result, requested_format); // Get back the format
 
     // Pass the result to user
