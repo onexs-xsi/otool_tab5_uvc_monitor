@@ -191,6 +191,34 @@ static bool stream_open_only(app_t *a, int mode_idx)
     return true;
 }
 
+static bool should_skip_cam_ctrl_probe(const app_t *a, const char *context)
+{
+#if TAB5_DIAG_SKIP_CAM_CTRL_PROBE
+    ESP_LOGW(TAG, "Skipping camera control %s by TAB5_DIAG_SKIP_CAM_CTRL_PROBE",
+             context ? context : "probe");
+    return true;
+#else
+    if (a && a->dev_vid == 0x1e4e && a->dev_pid == 0x0110) {
+        ESP_LOGW(TAG,
+                 "Skipping camera control %s for UVC quirk VID:PID=%04x:%04x",
+                 context ? context : "probe", (unsigned)a->dev_vid, (unsigned)a->dev_pid);
+        return true;
+    }
+    return false;
+#endif
+}
+
+static void disable_cam_ctrl_candidates(app_t *a)
+{
+    if (!a) return;
+    for (size_t i = 0; i < CAM_ADV_CTRL_COUNT; i++) {
+        a->adv_caps[i].supported = false;
+        a->adv_caps[i].pending_apply = false;
+    }
+    a->adv_caps_probed = true;
+    a->adv_live_enabled = false;
+}
+
 static bool stream_start_only(app_t *a, const cam_mode_t *m)
 {
     if (!a || !a->stream_hdl || !m) return false;
@@ -216,8 +244,12 @@ bool open_stream(app_t *a, int mode_idx)
 
     // 控制端点在 stream_open 后已可用；先探测并回放 pending，再启动视频流。
     // 这样 MJPEG(HW) Quality 等可能重配传感器的控制不会在 streaming 活跃后打断采集。
-    cam_ctrl_probe_all(a);
-    cam_ctrl_apply_pending(a);
+    if (should_skip_cam_ctrl_probe(a, "probe/apply")) {
+        disable_cam_ctrl_candidates(a);
+    } else {
+        cam_ctrl_probe_all(a);
+        cam_ctrl_apply_pending(a);
+    }
 
     return stream_start_only(a, m);
 }
@@ -228,7 +260,12 @@ bool probe_stream_configuration(app_t *a, int mode_idx)
     if (!stream_open_only(a, mode_idx)) return false;
 
     ESP_LOGI(TAG, "Configuration preflight: stream opened for GET_* verification without starting video");
-    cam_ctrl_probe_all(a);
+    const bool skip_ctrl_probe = should_skip_cam_ctrl_probe(a, "configuration probe");
+    if (skip_ctrl_probe) {
+        disable_cam_ctrl_candidates(a);
+    } else {
+        cam_ctrl_probe_all(a);
+    }
     esp_err_t close_err = uvc_host_stream_close(a->stream_hdl);
     if (close_err != ESP_OK) {
         ESP_LOGW(TAG, "Configuration preflight stream close failed: %s", esp_err_to_name(close_err));
@@ -236,7 +273,7 @@ bool probe_stream_configuration(app_t *a, int mode_idx)
     a->stream_hdl = nullptr;
     a->stream_active = false;
     drain_queue(a);
-    return a->adv_caps_probed;
+    return skip_ctrl_probe ? false : a->adv_caps_probed;
 }
 
 void video_loop(app_t *a)

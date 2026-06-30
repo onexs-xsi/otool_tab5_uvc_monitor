@@ -290,9 +290,21 @@ static int app_select_factory_simple_mode(app_t *a)
 {
     if (!a || a->mode_count == 0) return -1;
 
-    const int mode_idx = TAB5_DIAG_FACTORY_DEFAULT_MODE ?
-                         default_mode_index(a) :
-                         factory_simple_mode_index(a);
+    int mode_idx = -1;
+#if TAB5_DIAG_FACTORY_MODE_INDEX >= 0
+    if (TAB5_DIAG_FACTORY_MODE_INDEX < (int)a->mode_count) {
+        mode_idx = TAB5_DIAG_FACTORY_MODE_INDEX;
+        ESP_LOGW(TAG, "Factory mode override: index=%d", mode_idx);
+    } else {
+        ESP_LOGW(TAG, "Factory mode override index %d out of range, mode_count=%u",
+                 TAB5_DIAG_FACTORY_MODE_INDEX, (unsigned)a->mode_count);
+    }
+#endif
+    if (mode_idx < 0) {
+        mode_idx = TAB5_DIAG_FACTORY_DEFAULT_MODE ?
+                   default_mode_index(a) :
+                   factory_simple_mode_index(a);
+    }
     if (mode_idx < 0) {
         ESP_LOGW(TAG, "Factory mode: no supported color stream mode");
         return -1;

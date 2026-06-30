@@ -256,7 +256,12 @@ esp_err_t uvc_host_stream_control_commit(uvc_host_stream_hdl_t stream_hdl, const
         // It returns 'default' format and frame settings. It is ignored for now.
         // We can reuse the returned value, if we wanted to implement 'negotiate default frame format' feature.
         memcpy(&format_set, vs_format, sizeof(uvc_host_stream_format_t));
-        uvc_host_stream_control_probe(stream_hdl, &format_set, NULL);
+        /*
+         * Keep the negotiated dwMaxVideoFrameSize/dwMaxPayloadTransferSize as
+         * seed values for the final PROBE/COMMIT. Some UVC devices return zero
+         * for these fields if the host sends a fresh all-zero control block.
+         */
+        uvc_host_stream_control_probe(stream_hdl, &format_set, &vs_result);
 
         // We do this to mimic Windows driver: The Min/Max values are ignored by this driver.
         // These values can be used if we wanted to negotiate advanced parameters, such as wCompQuality to select JPEG encoding quality

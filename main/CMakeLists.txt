@@ -34,6 +34,8 @@ option(TAB5_DIAG_DISABLE_UAC_HOST "Skip UAC host install for UVC control-transfe
 option(TAB5_DIAG_FACTORY_AUTO_START "Use factory simple auto-start mode for serial-only diagnosis" OFF)
 option(TAB5_DIAG_CYCLE_USB5V_ON_BOOT "Power-cycle USB 5V during boot for camera diagnosis" OFF)
 option(TAB5_DIAG_FACTORY_DEFAULT_MODE "Use the normal default selectable mode in factory diagnostic mode" OFF)
+option(TAB5_DIAG_SKIP_CAM_CTRL_PROBE "Skip camera extension/processing control probes before stream start" OFF)
+set(TAB5_DIAG_FACTORY_MODE_INDEX "-1" CACHE STRING "Diagnostic factory mode index override; -1 uses automatic selection")
 set(TAB5_DIAG_STREAM_OPEN_DELAY_MS "0" CACHE STRING "Diagnostic delay before uvc_host_stream_open")
 set(TAB5_UVC_FORCE_SETTLE_MS "-1" CACHE STRING "Force UVC stream-open settle delay for all cameras; -1 uses quirks")
 set(TAB5_UVC_QUIRK_1D6B_0102_SETTLE_MS "8000" CACHE STRING "Settle delay for slow UVC gadget 1d6b:0102")
@@ -46,6 +48,8 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     TAB5_DIAG_FACTORY_AUTO_START=$<BOOL:${TAB5_DIAG_FACTORY_AUTO_START}>
     TAB5_DIAG_CYCLE_USB5V_ON_BOOT=$<BOOL:${TAB5_DIAG_CYCLE_USB5V_ON_BOOT}>
     TAB5_DIAG_FACTORY_DEFAULT_MODE=$<BOOL:${TAB5_DIAG_FACTORY_DEFAULT_MODE}>
+    TAB5_DIAG_SKIP_CAM_CTRL_PROBE=$<BOOL:${TAB5_DIAG_SKIP_CAM_CTRL_PROBE}>
+    TAB5_DIAG_FACTORY_MODE_INDEX=${TAB5_DIAG_FACTORY_MODE_INDEX}
     TAB5_DIAG_STREAM_OPEN_DELAY_MS=${TAB5_DIAG_STREAM_OPEN_DELAY_MS}
     TAB5_UVC_FORCE_SETTLE_MS=${TAB5_UVC_FORCE_SETTLE_MS}
     TAB5_UVC_QUIRK_1D6B_0102_SETTLE_MS=${TAB5_UVC_QUIRK_1D6B_0102_SETTLE_MS})

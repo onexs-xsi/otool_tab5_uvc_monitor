@@ -16,7 +16,10 @@
 #include "uvc_critical_priv.h"
 
 static const char *TAG = "uvc-isoc";
+static uint32_t s_usb_error_log_count;
+static uint32_t s_frame_error_log_count;
 static uint32_t s_invalid_header_log_count;
+static uint32_t s_invalid_mjpeg_soi_log_count;
 static uint32_t s_invalid_mjpeg_log_count;
 
 static bool mjpeg_frame_trim(uvc_host_frame_t *frame)
@@ -92,9 +95,16 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
         case USB_TRANSFER_STATUS_ERROR:
         case USB_TRANSFER_STATUS_OVERFLOW:
         case USB_TRANSFER_STATUS_STALL:
-            ESP_LOGW(TAG, "usb err %d", isoc_desc->status);
+        {
+            uint32_t log_count = s_usb_error_log_count++;
+            if (log_count < 16 || (log_count % 1000) == 0) {
+                ESP_LOGW(TAG, "usb err #%u pkt=%d status=%d actual=%d requested=%d transfer=%d",
+                         (unsigned)(log_count + 1), i, isoc_desc->status,
+                         isoc_desc->actual_num_bytes, isoc_desc->num_bytes, transfer->status);
+            }
             uvc_stream->single_thread.skip_current_frame = true;
             goto next_isoc_packet; // Data corrupted
+        }
 
         case USB_TRANSFER_STATUS_TIMED_OUT:
         case USB_TRANSFER_STATUS_SKIPPED:
@@ -131,7 +141,10 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
 
         // Check for error flag
         if (payload_header->bmHeaderInfo.error) {
-            ESP_LOGW(TAG, "frame error");
+            uint32_t log_count = s_frame_error_log_count++;
+            if (log_count < 16 || (log_count % 1000) == 0) {
+                ESP_LOGW(TAG, "frame error #%u", (unsigned)(log_count + 1));
+            }
             uvc_stream->single_thread.skip_current_frame = true;
         }
 
@@ -147,7 +160,13 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
                     (payload_data[0] != JPEG_MARKER || payload_data[1] != JPEG_SOI)) {
                 // We received frame with invalid frame, skip this frame
                 uvc_stream->single_thread.skip_current_frame = true;
-                ESP_LOGW(TAG, "invalid MJPEG SOI");
+                uint32_t log_count = s_invalid_mjpeg_soi_log_count++;
+                if (log_count < 16 || (log_count % 1000) == 0) {
+                    ESP_LOGW(TAG, "invalid MJPEG SOI #%u: len=%u first=%02x%02x",
+                             (unsigned)(log_count + 1), (unsigned)payload_data_len,
+                             payload_data_len > 0 ? payload_data[0] : 0,
+                             payload_data_len > 1 ? payload_data[1] : 0);
+                }
             }
 
             // Get free frame buffer for this new frame

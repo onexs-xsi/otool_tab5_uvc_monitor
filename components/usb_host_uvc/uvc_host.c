@@ -706,6 +706,103 @@ static inline esp_err_t uvc_set_interface(uvc_host_stream_hdl_t stream_hdl, bool
                NULL);
 }
 
+static uint16_t uvc_ep_effective_mps(const usb_ep_desc_t *ep_desc)
+{
+    uint16_t mps = USB_EP_DESC_GET_MPS(ep_desc);
+    if (USB_EP_DESC_GET_XFERTYPE(ep_desc) == USB_BM_ATTRIBUTES_XFER_ISOC) {
+        mps *= (USB_EP_DESC_GET_MULT(ep_desc) + 1);
+    }
+    return mps;
+}
+
+static void uvc_log_streaming_ep(const char *prefix, const usb_intf_desc_t *intf_desc, const usb_ep_desc_t *ep_desc, uint16_t bcdUVC)
+{
+    if (!intf_desc || !ep_desc) {
+        return;
+    }
+    ESP_LOGI(TAG,
+             "%s iface=%u alt=%u ep=0x%02x attr=0x%02x mps=%u mult=%u effective_mps=%u interval=%u bcdUVC=0x%04x",
+             prefix,
+             (unsigned)intf_desc->bInterfaceNumber,
+             (unsigned)intf_desc->bAlternateSetting,
+             (unsigned)ep_desc->bEndpointAddress,
+             (unsigned)ep_desc->bmAttributes,
+             (unsigned)USB_EP_DESC_GET_MPS(ep_desc),
+             (unsigned)(USB_EP_DESC_GET_MULT(ep_desc) + 1),
+             (unsigned)uvc_ep_effective_mps(ep_desc),
+             (unsigned)ep_desc->bInterval,
+             (unsigned)bcdUVC);
+}
+
+static esp_err_t uvc_reclaim_interface_for_payload(uvc_stream_t *uvc_stream,
+                                                   uint32_t dwMaxPayloadTransferSize,
+                                                   const usb_ep_desc_t **ep_desc_inout)
+{
+    UVC_CHECK(uvc_stream && ep_desc_inout && *ep_desc_inout, ESP_ERR_INVALID_ARG);
+    if (USB_EP_DESC_GET_XFERTYPE(*ep_desc_inout) != USB_BM_ATTRIBUTES_XFER_ISOC ||
+            dwMaxPayloadTransferSize == 0) {
+        return ESP_OK;
+    }
+
+    const usb_config_desc_t *cfg_desc;
+    ESP_ERROR_CHECK(usb_host_get_active_config_descriptor(uvc_stream->constant.dev_hdl, &cfg_desc));
+
+    const uint16_t requested_mps = (dwMaxPayloadTransferSize > UINT16_MAX) ?
+                                   UINT16_MAX : (uint16_t)dwMaxPayloadTransferSize;
+    const usb_intf_desc_t *payload_intf_desc = NULL;
+    const usb_ep_desc_t *payload_ep_desc = NULL;
+    esp_err_t ret = uvc_desc_get_streaming_intf_and_ep(
+                        cfg_desc,
+                        uvc_stream->constant.bInterfaceNumber,
+                        requested_mps,
+                        &payload_intf_desc,
+                        &payload_ep_desc);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "No ISOC alternate setting found for negotiated payload=%"PRIu32", keeping current alt=%u effective_mps=%u",
+                 dwMaxPayloadTransferSize,
+                 (unsigned)uvc_stream->constant.bAlternateSetting,
+                 (unsigned)uvc_ep_effective_mps(*ep_desc_inout));
+        return ESP_OK;
+    }
+
+    const bool same_alt = payload_intf_desc->bAlternateSetting == uvc_stream->constant.bAlternateSetting;
+    const bool same_ep = payload_ep_desc->bEndpointAddress == uvc_stream->constant.bEndpointAddress;
+    if (same_alt && same_ep) {
+        uvc_log_streaming_ep("Using negotiated streaming endpoint", payload_intf_desc, payload_ep_desc, uvc_stream->constant.bcdUVC);
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG,
+             "Reclaiming streaming interface for negotiated payload=%"PRIu32": alt %u/mps %u -> alt %u/mps %u",
+             dwMaxPayloadTransferSize,
+             (unsigned)uvc_stream->constant.bAlternateSetting,
+             (unsigned)uvc_ep_effective_mps(*ep_desc_inout),
+             (unsigned)payload_intf_desc->bAlternateSetting,
+             (unsigned)uvc_ep_effective_mps(payload_ep_desc));
+
+    ESP_RETURN_ON_ERROR(
+        usb_host_interface_release(p_uvc_host_driver->usb_client_hdl,
+                                   uvc_stream->constant.dev_hdl,
+                                   uvc_stream->constant.bInterfaceNumber),
+        TAG, "Could not release initial streaming interface");
+    ESP_RETURN_ON_ERROR(
+        usb_host_interface_claim(p_uvc_host_driver->usb_client_hdl,
+                                 uvc_stream->constant.dev_hdl,
+                                 payload_intf_desc->bInterfaceNumber,
+                                 payload_intf_desc->bAlternateSetting),
+        TAG, "Could not claim negotiated streaming interface");
+
+    uvc_stream->constant.bAlternateSetting = payload_intf_desc->bAlternateSetting;
+    uvc_stream->constant.bEndpointAddress = payload_ep_desc->bEndpointAddress;
+    *ep_desc_inout = payload_ep_desc;
+
+    if (uvc_stream->constant.bAlternateSetting != 0) {
+        uvc_set_interface(uvc_stream, false);
+    }
+    uvc_log_streaming_ep("Claimed negotiated streaming endpoint", payload_intf_desc, payload_ep_desc, uvc_stream->constant.bcdUVC);
+    return ESP_OK;
+}
+
 /**
  * @brief Find and claim interface for selected frame format
  *
@@ -747,6 +844,7 @@ static esp_err_t uvc_claim_interface(uvc_stream_t *uvc_stream, uint8_t uvc_index
     uvc_stream->constant.bAlternateSetting = intf_desc->bAlternateSetting;
     uvc_stream->constant.bEndpointAddress  = ep_desc->bEndpointAddress;
     *ep_desc_ret                           = ep_desc;
+    uvc_log_streaming_ep("Selected initial streaming endpoint", intf_desc, ep_desc, bcdUVC);
 
     // Claim the interface in USB Host Lib
     return usb_host_interface_claim(
@@ -989,6 +1087,9 @@ esp_err_t uvc_host_stream_open(const uvc_host_stream_config_t *stream_config, in
     ESP_GOTO_ON_ERROR(
         uvc_host_stream_control_probe(uvc_stream, &real_format, &vs_result),
         err, TAG, "Failed to negotiate requested Video Stream format");
+    ESP_GOTO_ON_ERROR(
+        uvc_reclaim_interface_for_payload(uvc_stream, vs_result.dwMaxPayloadTransferSize, &ep_desc),
+        err, TAG, "Failed to select streaming interface for negotiated payload");
 
     // For ISOC endpoints the URB must cover at least one full UVC payload; for BULK the
     // USB host splits data automatically across transfers, so dwMaxPayloadTransferSize (which
