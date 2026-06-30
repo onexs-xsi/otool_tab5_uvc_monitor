@@ -97,6 +97,9 @@ typedef struct {
             uint8_t dev_addr;             /*!< USB device address. */
             uint8_t uvc_stream_index;     /*!< Index of UVC function for this uvc stream. */
             size_t frame_info_num;        /*!< Number of entries available from uvc_host_get_frame_list(). */
+            uint16_t vid;                 /*!< USB vendor ID. */
+            uint16_t pid;                 /*!< USB product ID. */
+            uint16_t bcd_device;          /*!< Device release number in BCD. */
         } device_connected;               /*!< Data for UVC_HOST_DRIVER_EVENT_DEVICE_CONNECTED. */
     };
 } uvc_host_driver_event_data_t;

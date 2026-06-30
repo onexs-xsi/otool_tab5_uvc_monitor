@@ -44,6 +44,19 @@ static size_t next_adaptive_frame_size(size_t current)
     return next;
 }
 
+static uint32_t stream_open_settle_ms(const app_t *a)
+{
+#if TAB5_UVC_FORCE_SETTLE_MS >= 0
+    return (uint32_t)TAB5_UVC_FORCE_SETTLE_MS;
+#else
+    if (!a) return CAM_STREAM_OPEN_SETTLE_DEFAULT_MS;
+    if (a->dev_vid == 0x1d6b && a->dev_pid == 0x0102) {
+        return (uint32_t)TAB5_UVC_QUIRK_1D6B_0102_SETTLE_MS;
+    }
+    return CAM_STREAM_OPEN_SETTLE_DEFAULT_MS;
+#endif
+}
+
 static bool restart_stream_after_overflow(app_t *a, int mode_idx)
 {
     if (!a) return false;
@@ -136,13 +149,16 @@ static bool stream_open_only(app_t *a, int mode_idx)
     cfg.advanced.number_of_urbs          = CAM_URB_CNT;
     cfg.advanced.urb_size                = CAM_URB_SIZE;
 
-#if CAM_STREAM_OPEN_SETTLE_MS > 0
-    if (a->uvc_connected_ms != 0) {
+#if CAM_STREAM_OPEN_SETTLE_DEFAULT_MS > 0 || TAB5_UVC_FORCE_SETTLE_MS >= 0 || TAB5_UVC_QUIRK_1D6B_0102_SETTLE_MS > 0
+    const uint32_t settle_ms = stream_open_settle_ms(a);
+    if (settle_ms > 0 && a->uvc_connected_ms != 0) {
         const uint32_t now_ms = (uint32_t)esp_log_timestamp();
         const uint32_t elapsed_ms = now_ms - a->uvc_connected_ms;
-        if (elapsed_ms < CAM_STREAM_OPEN_SETTLE_MS) {
-            const uint32_t wait_ms = CAM_STREAM_OPEN_SETTLE_MS - elapsed_ms;
-            ESP_LOGW(TAG, "Waiting %u ms for UVC device to settle before stream control", (unsigned)wait_ms);
+        if (elapsed_ms < settle_ms) {
+            const uint32_t wait_ms = settle_ms - elapsed_ms;
+            ESP_LOGW(TAG,
+                     "Waiting %u ms for UVC device %04x:%04x to settle before stream control",
+                     (unsigned)wait_ms, (unsigned)a->dev_vid, (unsigned)a->dev_pid);
             vTaskDelay(pdMS_TO_TICKS(wait_ms));
             if (a->events && (xEventGroupGetBits(a->events) & EV_DEV_LOST)) {
                 ESP_LOGW(TAG, "Skip stream open because device was lost during settle wait");

@@ -66,7 +66,8 @@ typedef struct {
 
 static uvc_host_driver_t *p_uvc_host_driver = NULL;
 
-static esp_err_t uvc_host_interface_check(uint8_t addr, const usb_config_desc_t *config_desc)
+static esp_err_t uvc_host_interface_check(uint8_t addr, uint16_t vid, uint16_t pid,
+                                          uint16_t bcd_device, const usb_config_desc_t *config_desc)
 {
     assert(config_desc);
     size_t total_length = config_desc->wTotalLength;
@@ -94,7 +95,10 @@ static esp_err_t uvc_host_interface_check(uint8_t addr, const usb_config_desc_t 
                     .type = UVC_HOST_DRIVER_EVENT_DEVICE_CONNECTED,
                     .device_connected.dev_addr = addr,
                     .device_connected.uvc_stream_index = uvc_stream_index,
-                    .device_connected.frame_info_num = frame_info_num
+                    .device_connected.frame_info_num = frame_info_num,
+                    .device_connected.vid = vid,
+                    .device_connected.pid = pid,
+                    .device_connected.bcd_device = bcd_device,
                 };
                 p_uvc_host_driver->user_cb(&conn_event, p_uvc_host_driver->user_ctx);
             }
@@ -155,11 +159,19 @@ static esp_err_t uvc_host_device_connected(uint8_t addr)
     bool is_uvc_device = false;
     usb_device_handle_t dev_hdl;
     const usb_config_desc_t *config_desc = NULL;
+    uint16_t vid = 0;
+    uint16_t pid = 0;
+    uint16_t bcd_device = 0;
     esp_err_t open_err = usb_host_device_open(p_uvc_host_driver->usb_client_hdl, addr, &dev_hdl);
 
     if (open_err == ESP_OK) {
         const usb_device_desc_t *device_desc = NULL;
         esp_err_t desc_err = usb_host_get_device_descriptor(dev_hdl, &device_desc);
+        if (desc_err == ESP_OK && device_desc) {
+            vid = device_desc->idVendor;
+            pid = device_desc->idProduct;
+            bcd_device = device_desc->bcdDevice;
+        }
         if (usb_host_get_active_config_descriptor(dev_hdl, &config_desc) == ESP_OK) {
             is_uvc_device = uvc_desc_is_uvc_device(config_desc);
         }
@@ -177,7 +189,7 @@ static esp_err_t uvc_host_device_connected(uint8_t addr)
         usb_print_config_descriptor(config_desc, &uvc_print_desc);
 #endif // CONFIG_UVC_PRINTF_CONFIGURATION_DESCRIPTOR
         // Create Interfaces list for a possibility to claim Interface
-        ESP_RETURN_ON_ERROR(uvc_host_interface_check(addr, config_desc), TAG, "uvc stream interface not found");
+        ESP_RETURN_ON_ERROR(uvc_host_interface_check(addr, vid, pid, bcd_device, config_desc), TAG, "uvc stream interface not found");
     }
 
     return is_uvc_device ? ESP_OK : ESP_ERR_NOT_FOUND;

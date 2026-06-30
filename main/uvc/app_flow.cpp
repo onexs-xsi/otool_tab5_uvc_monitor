@@ -55,6 +55,9 @@ static void app_reset_connected_device_state(app_t *a)
     a->selected_mode = 0;
     a->dev_addr = 0;
     a->stream_idx = 0;
+    a->dev_vid = 0;
+    a->dev_pid = 0;
+    a->dev_bcd_device = 0;
     a->uvc_connected_ms = 0;
     a->stream_restart_requested = false;
     a->uvc_frame_size_override = 0;

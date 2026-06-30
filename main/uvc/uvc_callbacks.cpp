@@ -70,7 +70,11 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
     uint8_t addr  = event->device_connected.dev_addr;
     uint8_t sidx  = event->device_connected.uvc_stream_index;
     size_t  fcnt  = event->device_connected.frame_info_num;
-    ESP_LOGI(TAG, "UVC connected: addr=%u stream=%u frame_entries=%u", addr, sidx, (unsigned)fcnt);
+    uint16_t vid = event->device_connected.vid;
+    uint16_t pid = event->device_connected.pid;
+    uint16_t bcd_device = event->device_connected.bcd_device;
+    ESP_LOGI(TAG, "UVC connected: addr=%u stream=%u frame_entries=%u VID:PID=%04x:%04x bcdDevice=0x%04x",
+             addr, sidx, (unsigned)fcnt, (unsigned)vid, (unsigned)pid, (unsigned)bcd_device);
 
     if (fcnt == 0) return;
 
@@ -93,6 +97,9 @@ void uvc_driver_event_cb(const uvc_host_driver_event_data_t *event, void *user_c
 
     a->dev_addr    = addr;
     a->stream_idx  = sidx;
+    a->dev_vid = vid;
+    a->dev_pid = pid;
+    a->dev_bcd_device = bcd_device;
     a->uvc_connected_ms = (uint32_t)esp_log_timestamp();
     a->mode_count  = 0;
 
