@@ -5,6 +5,7 @@
  */
 
 #include "app_internal.h"
+#include "display_viewport.h"
 
 static bool panel_clip_rect_phys(int *x, int *y, int *w, int *h)
 {
@@ -81,102 +82,19 @@ void panel_prepare_dirty_logic(app_t *a, int x, int y, int w, int h)
     panel_prepare_dirty_phys(a, y, PANEL_LOGIC_W - x - w, h, w);
 }
 
-static uint32_t ceil_div_u32(uint64_t n, uint32_t d)
-{
-    return d ? (uint32_t)((n + d - 1) / d) : 0;
-}
-
-static constexpr uint32_t PPA_SRM_SCALE_DEN = 16;
-static constexpr uint32_t PPA_SRM_SCALE_UNITS_MAX = PPA_SRM_SCALE_DEN * 2;
-
-static uint32_t ppa_clamp_scale_units(uint32_t units)
-{
-    if (units < 1) return 1;
-    if (units > PPA_SRM_SCALE_UNITS_MAX) return PPA_SRM_SCALE_UNITS_MAX;
-    return units;
-}
-
-static uint32_t ppa_scale_units_floor(float scale)
-{
-    if (scale < (1.0f / (float)PPA_SRM_SCALE_DEN)) {
-        return 1;
-    }
-    return ppa_clamp_scale_units((uint32_t)(scale * (float)PPA_SRM_SCALE_DEN));
-}
-
-static uint32_t ppa_scale_units_ceil_ratio(uint32_t target_dim, uint32_t src_dim)
-{
-    if (target_dim == 0 || src_dim == 0) {
-        return 1;
-    }
-    return ppa_clamp_scale_units(ceil_div_u32((uint64_t)target_dim * PPA_SRM_SCALE_DEN, src_dim));
-}
-
-static uint32_t ppa_scaled_dim(uint32_t src_dim, uint32_t scale_units)
-{
-    return (uint32_t)(((uint64_t)src_dim * scale_units) / PPA_SRM_SCALE_DEN);
-}
-
-static uint32_t ppa_crop_dim_for_target(uint32_t src_dim, uint32_t target_dim, uint32_t scale_units)
-{
-    if (src_dim == 0 || target_dim == 0 || scale_units == 0) {
-        return 0;
-    }
-
-    uint32_t crop_dim = (uint32_t)((((uint64_t)target_dim + 1) * PPA_SRM_SCALE_DEN - 1) / scale_units);
-    if (crop_dim > src_dim) {
-        crop_dim = src_dim;
-    }
-    while (crop_dim > 1 && ppa_scaled_dim(crop_dim, scale_units) > target_dim) {
-        crop_dim--;
-    }
-    return crop_dim ? crop_dim : 1;
-}
-
 esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
                            unsigned sw, unsigned sh, ppa_srm_color_mode_t in_cm)
 {
     panel_dirty_reset(a);
 
-    const uint32_t avail_phys_h = (a && a->adv_live_enabled)
-                                  ? (PANEL_PHYS_H - ADV_PHY_PY_RESERVE)
-                                  : PANEL_PHYS_H;
-    const uint32_t target_w = PANEL_PHYS_W;
-    const uint32_t target_h = avail_phys_h;
-
-    float scale_w = (float)target_w / (float)sh;
-    float scale_h = (float)target_h / (float)sw;
-    float ideal_scale = (scale_w < scale_h) ? scale_w : scale_h;
-    if (ideal_scale > 2.0f) ideal_scale = 2.0f;
-    if (ideal_scale < 0.1f) ideal_scale = 0.1f;
-
-    uint32_t in_block_w = sw;
-    uint32_t in_block_h = sh;
-    uint32_t in_off_x = 0;
-    uint32_t in_off_y = 0;
-    uint32_t scale_units = ppa_scale_units_floor(ideal_scale);
-
-    const uint32_t ideal_out_w = ((uint32_t)((float)sh * ideal_scale + 0.5f)) & ~1u;
-    const uint32_t ideal_out_h = ((uint32_t)((float)sw * ideal_scale + 0.5f)) & ~1u;
-    const bool intended_fullscreen = (ideal_out_w == target_w && ideal_out_h == target_h);
-
-    if (intended_fullscreen) {
-        const uint32_t cover_units_w = ppa_scale_units_ceil_ratio(target_w, sh);
-        const uint32_t cover_units_h = ppa_scale_units_ceil_ratio(target_h, sw);
-        scale_units = (cover_units_w > cover_units_h) ? cover_units_w : cover_units_h;
-
-        in_block_h = ppa_crop_dim_for_target(sh, target_w, scale_units);
-        in_block_w = ppa_crop_dim_for_target(sw, target_h, scale_units);
-        in_off_x = (sw > in_block_w) ? ((sw - in_block_w) / 2) : 0;
-        in_off_y = (sh > in_block_h) ? ((sh - in_block_h) / 2) : 0;
-    }
-
-    const float scale = (float)scale_units / (float)PPA_SRM_SCALE_DEN;
-    const uint32_t out_w = ppa_scaled_dim(in_block_h, scale_units);
-    const uint32_t out_h = ppa_scaled_dim(in_block_w, scale_units);
-    const uint32_t off_x = (target_w > out_w) ? ((target_w - out_w) / 2) : 0;
-    const uint32_t off_y = (PANEL_PHYS_H - avail_phys_h) +
-                           ((target_h > out_h) ? ((target_h - out_h) / 2) : 0);
+    const display_viewport_config_t viewport_config = {
+        PANEL_PHYS_W,
+        PANEL_PHYS_H,
+        ADV_PHY_PY_RESERVE,
+        (a && a->adv_live_enabled),
+    };
+    const display_viewport_t viewport = display_viewport_calc(sw, sh, &viewport_config);
+    const float scale = (float)viewport.scale_units / (float)viewport.scale_den;
 
     static unsigned s_log_sw = 0;
     static unsigned s_log_sh = 0;
@@ -190,45 +108,46 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     static uint32_t s_log_scale_units = 0;
     static int s_log_adv = -1;
     const int adv_enabled = (a && a->adv_live_enabled) ? 1 : 0;
-    if (s_log_sw != sw || s_log_sh != sh || s_log_crop_w != in_block_w ||
-        s_log_crop_h != in_block_h || s_log_crop_x != in_off_x || s_log_crop_y != in_off_y ||
-        s_log_avail_h != avail_phys_h || s_log_out_w != out_w || s_log_out_h != out_h ||
-        s_log_scale_units != scale_units || s_log_adv != adv_enabled) {
+    if (s_log_sw != sw || s_log_sh != sh || s_log_crop_w != viewport.crop_w ||
+        s_log_crop_h != viewport.crop_h || s_log_crop_x != viewport.crop_x || s_log_crop_y != viewport.crop_y ||
+        s_log_avail_h != viewport.avail_h || s_log_out_w != viewport.out_w || s_log_out_h != viewport.out_h ||
+        s_log_scale_units != viewport.scale_units || s_log_adv != adv_enabled) {
         const unsigned scale_milli = (unsigned)(scale * 1000.0f + 0.5f);
         ESP_LOGI(TAG,
                  "display scale: src=%ux%u crop=%ux%u+%u,%u phys=%ux%u avail_h=%u out=%ux%u off=%u,%u scale=%u.%03u q=%u/%u adv=%d",
-                 sw, sh, (unsigned)in_block_w, (unsigned)in_block_h,
-                 (unsigned)in_off_x, (unsigned)in_off_y,
-                 PANEL_PHYS_W, PANEL_PHYS_H, (unsigned)avail_phys_h,
-                 (unsigned)out_w, (unsigned)out_h, (unsigned)off_x, (unsigned)off_y,
+                 sw, sh, (unsigned)viewport.crop_w, (unsigned)viewport.crop_h,
+                 (unsigned)viewport.crop_x, (unsigned)viewport.crop_y,
+                 PANEL_PHYS_W, PANEL_PHYS_H, (unsigned)viewport.avail_h,
+                 (unsigned)viewport.out_w, (unsigned)viewport.out_h,
+                 (unsigned)viewport.off_x, (unsigned)viewport.off_y,
                  scale_milli / 1000, scale_milli % 1000,
-                 (unsigned)scale_units, (unsigned)PPA_SRM_SCALE_DEN, adv_enabled);
+                 (unsigned)viewport.scale_units, (unsigned)viewport.scale_den, adv_enabled);
         s_log_sw = sw;
         s_log_sh = sh;
-        s_log_crop_w = in_block_w;
-        s_log_crop_h = in_block_h;
-        s_log_crop_x = in_off_x;
-        s_log_crop_y = in_off_y;
-        s_log_avail_h = avail_phys_h;
-        s_log_out_w = out_w;
-        s_log_out_h = out_h;
-        s_log_scale_units = scale_units;
+        s_log_crop_w = viewport.crop_w;
+        s_log_crop_h = viewport.crop_h;
+        s_log_crop_x = viewport.crop_x;
+        s_log_crop_y = viewport.crop_y;
+        s_log_avail_h = viewport.avail_h;
+        s_log_out_w = viewport.out_w;
+        s_log_out_h = viewport.out_h;
+        s_log_scale_units = viewport.scale_units;
         s_log_adv = adv_enabled;
     }
 
-    if (off_x == 0 && off_y == 0 &&
-        out_w == PANEL_PHYS_W && out_h == PANEL_PHYS_H) {
+    if (viewport.off_x == 0 && viewport.off_y == 0 &&
+        viewport.out_w == PANEL_PHYS_W && viewport.out_h == PANEL_PHYS_H) {
         // The scaled frame fully covers the physical panel.
     } else {
         const size_t row_bytes = (size_t)PANEL_PHYS_W * 2;
 
-        if (off_y > 0) {
-            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-            memset(a->panel_buf, 0, (size_t)off_y * row_bytes);
-            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        if (viewport.off_y > 0) {
+            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, viewport.off_y, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            memset(a->panel_buf, 0, (size_t)viewport.off_y * row_bytes);
+            panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, viewport.off_y, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
 
-        uint32_t bottom_y = off_y + out_h;
+        uint32_t bottom_y = viewport.off_y + viewport.out_h;
         if (bottom_y < PANEL_PHYS_H) {
             panel_cache_msync_phys_rect(a, 0, bottom_y, PANEL_PHYS_W, PANEL_PHYS_H - bottom_y,
                                         ESP_CACHE_MSYNC_FLAG_DIR_M2C);
@@ -238,27 +157,29 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
                                         ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
 
-        if (off_x > 0 || (off_x + out_w) < PANEL_PHYS_W) {
-            const size_t left_bytes = (size_t)off_x * 2;
-            const size_t right_start = (size_t)(off_x + out_w) * 2;
+        if (viewport.off_x > 0 || (viewport.off_x + viewport.out_w) < PANEL_PHYS_W) {
+            const size_t left_bytes = (size_t)viewport.off_x * 2;
+            const size_t right_start = (size_t)(viewport.off_x + viewport.out_w) * 2;
             const size_t right_bytes = (size_t)PANEL_PHYS_W * 2 - right_start;
             if (left_bytes) {
-                panel_cache_msync_phys_rect(a, 0, off_y, off_x, out_h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+                panel_cache_msync_phys_rect(a, 0, viewport.off_y, viewport.off_x, viewport.out_h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
             }
             if (right_bytes) {
-                panel_cache_msync_phys_rect(a, off_x + out_w, off_y, PANEL_PHYS_W - off_x - out_w, out_h,
+                panel_cache_msync_phys_rect(a, viewport.off_x + viewport.out_w, viewport.off_y,
+                                            PANEL_PHYS_W - viewport.off_x - viewport.out_w, viewport.out_h,
                                             ESP_CACHE_MSYNC_FLAG_DIR_M2C);
             }
-            for (uint32_t y = off_y; y < bottom_y; y++) {
+            for (uint32_t y = viewport.off_y; y < bottom_y; y++) {
                 uint8_t *row = a->panel_buf + (size_t)y * row_bytes;
                 if (left_bytes) memset(row, 0, left_bytes);
                 if (right_bytes) memset(row + right_start, 0, right_bytes);
             }
             if (left_bytes) {
-                panel_cache_msync_phys_rect(a, 0, off_y, off_x, out_h, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+                panel_cache_msync_phys_rect(a, 0, viewport.off_y, viewport.off_x, viewport.out_h, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             }
             if (right_bytes) {
-                panel_cache_msync_phys_rect(a, off_x + out_w, off_y, PANEL_PHYS_W - off_x - out_w, out_h,
+                panel_cache_msync_phys_rect(a, viewport.off_x + viewport.out_w, viewport.off_y,
+                                            PANEL_PHYS_W - viewport.off_x - viewport.out_w, viewport.out_h,
                                             ESP_CACHE_MSYNC_FLAG_DIR_C2M);
             }
         }
@@ -270,10 +191,10 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     cfg.in.buffer = src_buf;
     cfg.in.pic_w = sw;
     cfg.in.pic_h = sh;
-    cfg.in.block_w = in_block_w;
-    cfg.in.block_h = in_block_h;
-    cfg.in.block_offset_x = in_off_x;
-    cfg.in.block_offset_y = in_off_y;
+    cfg.in.block_w = viewport.crop_w;
+    cfg.in.block_h = viewport.crop_h;
+    cfg.in.block_offset_x = viewport.crop_x;
+    cfg.in.block_offset_y = viewport.crop_y;
     cfg.in.srm_cm = in_cm;
     cfg.in.yuv_range = PPA_COLOR_RANGE_LIMIT;
     cfg.in.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
@@ -282,8 +203,8 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     cfg.out.buffer_size = PANEL_BUF_SIZE;
     cfg.out.pic_w = PANEL_PHYS_W;
     cfg.out.pic_h = PANEL_PHYS_H;
-    cfg.out.block_offset_x = off_x;
-    cfg.out.block_offset_y = off_y;
+    cfg.out.block_offset_x = viewport.off_x;
+    cfg.out.block_offset_y = viewport.off_y;
     cfg.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
     cfg.out.yuv_range = PPA_COLOR_RANGE_LIMIT;
     cfg.out.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;

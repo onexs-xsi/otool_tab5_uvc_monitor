@@ -15,6 +15,7 @@ idf_component_register(SRCS "main.cpp"
                   "ui/advanced_overlay.cpp"
                   "ui/factory_overlay.cpp"
                   "display_pipeline.cpp"
+                  "display_viewport.cpp"
                     INCLUDE_DIRS "."
                     REQUIRES
                         usb_host_uac

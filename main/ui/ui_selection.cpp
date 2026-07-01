@@ -6,6 +6,7 @@
 
 // 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
+#include "display_viewport.h"
 
 #ifndef TAB5_APP_VERSION_BUILD
 #define TAB5_APP_VERSION_BUILD "vdev_unknown"
@@ -52,6 +53,39 @@ static lv_obj_t *ui_create_info_label(lv_obj_t *parent, const char *text, lv_col
     lv_obj_set_style_text_color(lbl, color, 0);
     if (font) lv_obj_set_style_text_font(lbl, font, 0);
     return lbl;
+}
+
+static bool ui_pending_adv_live_enabled(const app_t *a)
+{
+    return a && adv_any_supported(a) && a->adv_switch &&
+           lv_obj_has_state(a->adv_switch, LV_STATE_CHECKED);
+}
+
+static display_viewport_t ui_display_viewport_for_mode(const app_t *a, const cam_mode_t *m)
+{
+    const display_viewport_config_t viewport_config = {
+        PANEL_PHYS_W,
+        PANEL_PHYS_H,
+        ADV_PHY_PY_RESERVE,
+        ui_pending_adv_live_enabled(a),
+    };
+    return display_viewport_calc(m ? m->w : 0, m ? m->h : 0, &viewport_config);
+}
+
+static void ui_format_display_viewport_note(const app_t *a, const cam_mode_t *m,
+                                            char *out, size_t out_size)
+{
+    if (!out || out_size == 0) return;
+    const display_viewport_t viewport = ui_display_viewport_for_mode(a, m);
+    display_viewport_format_summary(&viewport, out, out_size);
+    if (viewport.reserved_top_h > 0) {
+        const size_t used = strlen(out);
+        if (used + 1 < out_size) {
+            snprintf(out + used, out_size - used,
+                     " ADV reserves top %u px.",
+                     (unsigned)viewport.reserved_top_h);
+        }
+    }
 }
 
 static void ui_reset_touch_cache(app_t *a)
@@ -433,7 +467,7 @@ static void show_not_recommended_confirm_dialog(app_t *a, int idx)
     lv_obj_add_flag(a->not_recommended_confirm_overlay, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *panel = lv_obj_create(a->not_recommended_confirm_overlay);
-    lv_obj_set_size(panel, 680, 330);
+    lv_obj_set_size(panel, 720, 370);
     lv_obj_center(panel);
     ui_set_panel_style(panel, lv_color_white(), 16);
     lv_obj_set_style_pad_all(panel, 24, 0);
@@ -445,15 +479,19 @@ static void show_not_recommended_confirm_dialog(app_t *a, int idx)
     lv_obj_set_height(title, 36);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    char msg[256];
+    char display_note[224];
+    ui_format_display_viewport_note(a, m, display_note, sizeof(display_note));
+
+    char msg[512];
     snprintf(msg, sizeof(msg),
              "%s %ux%u @%.1f fps is not recommended.\n\n"
-             "Performance may be poor, and the image will be compressed to fit the display.",
-             uvc_format_name(m->fmt), m->w, m->h, m->fps);
+             "%s\n\n"
+             "Performance may be poor.",
+             uvc_format_name(m->fmt), m->w, m->h, m->fps, display_note);
     lv_obj_t *body = ui_create_info_label(panel, msg, lv_color_make(0x47, 0x55, 0x69),
                                           &lv_font_montserrat_16);
-    lv_obj_set_width(body, 632);
-    lv_obj_set_height(body, 150);
+    lv_obj_set_width(body, 672);
+    lv_obj_set_height(body, 206);
     lv_obj_align(body, LV_ALIGN_TOP_LEFT, 0, 56);
 
     lv_obj_t *cancel = lv_button_create(panel);
@@ -513,18 +551,21 @@ static void show_stream_opening_overlay(app_t *a, int idx)
     lv_obj_set_width(title, 920);
     lv_obj_set_height(title, 40);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -34);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -58);
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%s %ux%u @%.1f fps\nWaiting for the first frame",
-             uvc_format_name(m->fmt), m->w, m->h, m->fps);
+    char display_note[224];
+    ui_format_display_viewport_note(a, m, display_note, sizeof(display_note));
+
+    char msg[384];
+    snprintf(msg, sizeof(msg), "%s %ux%u @%.1f fps\n%s\nWaiting for the first frame",
+             uvc_format_name(m->fmt), m->w, m->h, m->fps, display_note);
     lv_obj_t *body = ui_create_info_label(overlay, msg,
                                           lv_color_make(0xCB, 0xD5, 0xE1),
                                           &lv_font_montserrat_16);
     lv_obj_set_width(body, 920);
-    lv_obj_set_height(body, 64);
+    lv_obj_set_height(body, 112);
     lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(body, LV_ALIGN_CENTER, 0, 32);
+    lv_obj_align(body, LV_ALIGN_CENTER, 0, 28);
 
     lv_obj_move_foreground(overlay);
     lv_obj_invalidate(overlay);
