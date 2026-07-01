@@ -96,10 +96,15 @@ static void app_reset_stream_runtime_flags(app_t *a)
     a->not_recommended_confirmed_mode = -1;
 }
 
-static void app_prepare_stream_restart_state(app_t *a)
+static bool app_keep_start_overlay_until_first_frame(const app_t *a)
+{
+    return a && a->not_recommended_confirm_overlay != nullptr;
+}
+
+static void app_prepare_stream_restart_state(app_t *a, bool clear_panel)
 {
     if (!a) return;
-    panel_clear(a);
+    if (clear_panel) panel_clear(a);
     a->stream_restart_requested = false;
     a->uvc_frame_size_override = 0;
     a->stream_restart_count = 0;
@@ -418,7 +423,7 @@ static void app_run_factory_loop(app_t *a)
             continue;
         }
 
-        app_prepare_stream_restart_state(a);
+        app_prepare_stream_restart_state(a, true);
 
         if (!open_stream(a, a->selected_mode)) {
             ESP_LOGE(TAG, "Factory mode: failed to open stream");
@@ -469,11 +474,15 @@ static void app_run_factory_loop(app_t *a)
 static void app_restore_selection_after_stream_alloc_fail(app_t *a, const char *status_text)
 {
     if (!a) return;
+    a->not_recommended_confirm_mode = -1;
+    a->not_recommended_confirmed_mode = -1;
     otool_lvgl_port_resume();
-    ui_set_status(a, status_text);
     if (otool_lvgl_port_lock(50)) {
+        ui_populate_mode_list(a);
+        if (a->status_lbl) lv_label_set_text(a->status_lbl, status_text);
         if (a->confirm_btn) lv_obj_clear_state(a->confirm_btn, LV_STATE_DISABLED);
         if (a->check_btn) lv_obj_clear_state(a->check_btn, LV_STATE_DISABLED);
+        ui_update_info_panel(a);
         ui_update_advanced_button(a);
         otool_lvgl_port_unlock();
     }
@@ -565,6 +574,10 @@ static void app_run_selection_loop(app_t *a)
         // --- Phase B: 视频流 ---
         a->state = APP_STATE_STREAMING;
         a->stream_lvgl_ui = false;
+        if (otool_lvgl_port_lock(100)) {
+            lv_refr_now(a->lv_disp);
+            otool_lvgl_port_unlock();
+        }
         otool_lvgl_port_stop();
 
         ESP_LOGI(TAG, "Free SPIRAM before open: %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
@@ -575,7 +588,8 @@ static void app_run_selection_loop(app_t *a)
             continue;
         }
 
-        app_prepare_stream_restart_state(a);
+        const bool keep_start_overlay = app_keep_start_overlay_until_first_frame(a);
+        app_prepare_stream_restart_state(a, !keep_start_overlay);
 
         if (!open_stream(a, a->selected_mode)) {
             ESP_LOGE(TAG, "Failed to open stream");

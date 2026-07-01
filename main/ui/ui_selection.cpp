@@ -483,6 +483,53 @@ static void show_not_recommended_confirm_dialog(app_t *a, int idx)
     lv_obj_move_foreground(a->not_recommended_confirm_overlay);
 }
 
+static void show_stream_opening_overlay(app_t *a, int idx)
+{
+    if (!a || idx < 0 || idx >= (int)a->mode_count) return;
+    const cam_mode_t *m = &a->modes[idx];
+
+    lv_obj_t *overlay = a->not_recommended_confirm_overlay;
+    if (!overlay) {
+        overlay = lv_obj_create(lv_scr_act());
+        a->not_recommended_confirm_overlay = overlay;
+        lv_obj_set_size(overlay, lv_pct(100), lv_pct(100));
+        lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        ui_reset_touch_cache(a);
+        lv_obj_clean(overlay);
+    }
+
+    lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 0, 0);
+
+    lv_obj_t *title = ui_create_info_label(overlay, "Opening video stream...",
+                                           lv_color_white(),
+                                           &lv_font_montserrat_24);
+    lv_obj_set_width(title, 920);
+    lv_obj_set_height(title, 40);
+    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -34);
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "%s %ux%u @%.1f fps\nWaiting for the first frame",
+             uvc_format_name(m->fmt), m->w, m->h, m->fps);
+    lv_obj_t *body = ui_create_info_label(overlay, msg,
+                                          lv_color_make(0xCB, 0xD5, 0xE1),
+                                          &lv_font_montserrat_16);
+    lv_obj_set_width(body, 920);
+    lv_obj_set_height(body, 64);
+    lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(body, LV_ALIGN_CENTER, 0, 32);
+
+    lv_obj_move_foreground(overlay);
+    lv_obj_invalidate(overlay);
+}
+
 static void confirm_not_recommended_cancel_cb(lv_event_t *e)
 {
     app_t *a = (app_t *)lv_event_get_user_data(e);
@@ -519,10 +566,7 @@ static void confirm_not_recommended_open_cb(lv_event_t *e)
 
     a->not_recommended_confirmed_mode = idx;
     a->selected_mode = idx;
-    ui_set_selected_mode_visual(a, idx);
-    ui_update_info_panel(a);
-    ui_set_status(a, "Starting not recommended video stream...");
-    ui_clear_not_recommended_confirm(a);
+    show_stream_opening_overlay(a, idx);
     ui_commit_selected_mode(a);
 }
 
@@ -589,6 +633,7 @@ static void btn_confirm_cb(lv_event_t *e)
         ui_set_status(a, "Selected mode needs too much USB memory");
         return;
     }
+    show_stream_opening_overlay(a, a->selected_mode);
     ui_commit_selected_mode(a);
 }
 
@@ -1251,6 +1296,7 @@ void ui_populate_mode_list(app_t *a)
 {
     if (!a->list_obj) return;
     ui_reset_touch_cache(a);
+    ui_clear_not_recommended_confirm(a);
     lv_obj_clean(a->list_obj);
 
     for (int i = 0; i < (int)a->mode_count; i++) {

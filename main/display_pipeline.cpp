@@ -113,6 +113,29 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
     uint32_t off_x = (PANEL_PHYS_W - out_w) / 2;
     uint32_t off_y = (PANEL_PHYS_H - avail_phys_h) + (avail_phys_h - out_h) / 2;
 
+    static unsigned s_log_sw = 0;
+    static unsigned s_log_sh = 0;
+    static uint32_t s_log_avail_h = 0;
+    static uint32_t s_log_out_w = 0;
+    static uint32_t s_log_out_h = 0;
+    static int s_log_adv = -1;
+    const int adv_enabled = (a && a->adv_live_enabled) ? 1 : 0;
+    if (s_log_sw != sw || s_log_sh != sh || s_log_avail_h != avail_phys_h ||
+        s_log_out_w != out_w || s_log_out_h != out_h || s_log_adv != adv_enabled) {
+        const unsigned scale_milli = (unsigned)(scale * 1000.0f + 0.5f);
+        ESP_LOGI(TAG,
+                 "display scale: src=%ux%u phys=%ux%u avail_h=%u out=%ux%u off=%u,%u scale=%u.%03u adv=%d",
+                 sw, sh, PANEL_PHYS_W, PANEL_PHYS_H, (unsigned)avail_phys_h,
+                 (unsigned)out_w, (unsigned)out_h, (unsigned)off_x, (unsigned)off_y,
+                 scale_milli / 1000, scale_milli % 1000, adv_enabled);
+        s_log_sw = sw;
+        s_log_sh = sh;
+        s_log_avail_h = avail_phys_h;
+        s_log_out_w = out_w;
+        s_log_out_h = out_h;
+        s_log_adv = adv_enabled;
+    }
+
     // 性能: panel_buf 在 SPIRAM 里, 整屏 1.8MB memset 大约 30~60ms.
     // 输出图像与物理屏对齐时根本没有黑边, 直接跳过清零;
     // 否则只清四条边的 strip, 避免每帧都把整个 framebuffer 写一遍.
