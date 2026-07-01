@@ -18,4 +18,21 @@ menu "USB HOST UVC"
         default y
         help
             "If EOH is set in the header, this is the last header group in the packet"
+
+    config UVC_ISOC_DIAG
+        bool "Enable UVC isochronous stream diagnostics"
+        default n
+        help
+            Enables per-second isochronous stream counters and bounded anomaly
+            samples in the UVC ISOC path. Keep this disabled for production
+            builds unless diagnosing frame assembly or transport problems.
+
+    config UVC_ISOC_DIAG_SAMPLE_LIMIT
+        int "UVC isochronous diagnostic sample limit"
+        depends on UVC_ISOC_DIAG
+        default 32
+        range 0 1024
+        help
+            Maximum number of anomaly samples to print per boot when
+            UVC_ISOC_DIAG is enabled.
 endmenu

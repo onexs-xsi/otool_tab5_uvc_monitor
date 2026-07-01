@@ -321,6 +321,10 @@ static int app_select_factory_simple_mode(app_t *a)
         if (mode_is_selectable(&a->modes[TAB5_DIAG_FACTORY_MODE_INDEX])) {
             mode_idx = TAB5_DIAG_FACTORY_MODE_INDEX;
             ESP_LOGW(TAG, "Factory mode override: index=%d", mode_idx);
+        } else if (mode_start_requires_confirmation(&a->modes[TAB5_DIAG_FACTORY_MODE_INDEX])) {
+            mode_idx = TAB5_DIAG_FACTORY_MODE_INDEX;
+            a->not_recommended_confirmed_mode = mode_idx;
+            ESP_LOGW(TAG, "Factory mode override confirmed not-recommended index=%d", mode_idx);
         } else {
             ESP_LOGW(TAG, "Factory mode override index %d is not startable: %s",
                      TAB5_DIAG_FACTORY_MODE_INDEX,
@@ -403,6 +407,13 @@ static void app_run_factory_loop(app_t *a)
         }
 
         app_reset_stream_runtime_flags(a);
+#if TAB5_DIAG_FACTORY_MODE_INDEX >= 0
+        if (a->selected_mode >= 0 && a->selected_mode < (int)a->mode_count &&
+            mode_start_requires_confirmation(&a->modes[a->selected_mode])) {
+            a->not_recommended_confirmed_mode = a->selected_mode;
+            ESP_LOGW(TAG, "Factory mode override re-confirmed not-recommended index=%d", a->selected_mode);
+        }
+#endif
         factory_ui_set_waiting_status(a, "Starting video");
         factory_ui_set_mode_info(a);
 

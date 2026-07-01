@@ -1351,6 +1351,8 @@ esp_err_t uvc_host_stream_unpause(uvc_host_stream_hdl_t stream_hdl)
     // We set current_frame_id to illegal value (FrameID can be 0 or 1) so we catch SoF of the very first frame
     stream_hdl->single_thread.current_frame_id = 2;
     stream_hdl->single_thread.next_bulk_packet = UVC_STREAM_BULK_PACKET_SOF;
+    stream_hdl->single_thread.skip_current_frame = false;
+    stream_hdl->single_thread.mjpeg_suspect_current_frame = false;
     UVC_EXIT_CRITICAL();
 
     for (int i = 0; i < stream_hdl->constant.num_of_xfers; i++) {

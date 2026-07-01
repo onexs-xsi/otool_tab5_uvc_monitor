@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-// 自动从原 main.cpp 拆分而来。仅供 main 组件内部使用。
 #include "app_internal.h"
 
 static bool panel_clip_rect_phys(int *x, int *y, int *w, int *h)
@@ -82,75 +81,153 @@ void panel_prepare_dirty_logic(app_t *a, int x, int y, int w, int h)
     panel_prepare_dirty_phys(a, y, PANEL_LOGIC_W - x - w, h, w);
 }
 
-// ===================================================================
-// PPA scale+rotate: source (sw x sh) -> panel buf (PANEL_PHYS_W x PANEL_PHYS_H)
-// We rotate 90deg (landscape->portrait) and scale to fit.
-// ===================================================================
+static uint32_t ceil_div_u32(uint64_t n, uint32_t d)
+{
+    return d ? (uint32_t)((n + d - 1) / d) : 0;
+}
+
+static constexpr uint32_t PPA_SRM_SCALE_DEN = 16;
+static constexpr uint32_t PPA_SRM_SCALE_UNITS_MAX = PPA_SRM_SCALE_DEN * 2;
+
+static uint32_t ppa_clamp_scale_units(uint32_t units)
+{
+    if (units < 1) return 1;
+    if (units > PPA_SRM_SCALE_UNITS_MAX) return PPA_SRM_SCALE_UNITS_MAX;
+    return units;
+}
+
+static uint32_t ppa_scale_units_floor(float scale)
+{
+    if (scale < (1.0f / (float)PPA_SRM_SCALE_DEN)) {
+        return 1;
+    }
+    return ppa_clamp_scale_units((uint32_t)(scale * (float)PPA_SRM_SCALE_DEN));
+}
+
+static uint32_t ppa_scale_units_ceil_ratio(uint32_t target_dim, uint32_t src_dim)
+{
+    if (target_dim == 0 || src_dim == 0) {
+        return 1;
+    }
+    return ppa_clamp_scale_units(ceil_div_u32((uint64_t)target_dim * PPA_SRM_SCALE_DEN, src_dim));
+}
+
+static uint32_t ppa_scaled_dim(uint32_t src_dim, uint32_t scale_units)
+{
+    return (uint32_t)(((uint64_t)src_dim * scale_units) / PPA_SRM_SCALE_DEN);
+}
+
+static uint32_t ppa_crop_dim_for_target(uint32_t src_dim, uint32_t target_dim, uint32_t scale_units)
+{
+    if (src_dim == 0 || target_dim == 0 || scale_units == 0) {
+        return 0;
+    }
+
+    uint32_t crop_dim = (uint32_t)((((uint64_t)target_dim + 1) * PPA_SRM_SCALE_DEN - 1) / scale_units);
+    if (crop_dim > src_dim) {
+        crop_dim = src_dim;
+    }
+    while (crop_dim > 1 && ppa_scaled_dim(crop_dim, scale_units) > target_dim) {
+        crop_dim--;
+    }
+    return crop_dim ? crop_dim : 1;
+}
+
 esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
-                                  unsigned sw, unsigned sh, ppa_srm_color_mode_t in_cm)
+                           unsigned sw, unsigned sh, ppa_srm_color_mode_t in_cm)
 {
     panel_dirty_reset(a);
 
-    // ADV 开启时预留物理 py 顶部 ADV_PHY_PY_RESERVE 行给叠加面板，
-    // 视频缩放到剩余高度并向底部偏移，避免与 ADV 控件重叠。
     const uint32_t avail_phys_h = (a && a->adv_live_enabled)
-                                   ? (PANEL_PHYS_H - ADV_PHY_PY_RESERVE)
-                                   : PANEL_PHYS_H;
+                                  ? (PANEL_PHYS_H - ADV_PHY_PY_RESERVE)
+                                  : PANEL_PHYS_H;
+    const uint32_t target_w = PANEL_PHYS_W;
+    const uint32_t target_h = avail_phys_h;
 
-    // 旋转后图像尺寸: out_w = sh, out_h = sw (90 度)
-    // 目标屏幕: PANEL_PHYS_W x avail_phys_h
-    // 等比缩放: scale = min(PANEL_PHYS_W / sh, avail_phys_h / sw)
-    float scale_w = (float)PANEL_PHYS_W / (float)sh;
-    float scale_h = (float)avail_phys_h  / (float)sw;
-    float scale   = (scale_w < scale_h) ? scale_w : scale_h;
-    if (scale > 2.0f) scale = 2.0f;   // PPA scale 上限
-    if (scale < 0.1f) scale = 0.1f;   // PPA scale 下限
+    float scale_w = (float)target_w / (float)sh;
+    float scale_h = (float)target_h / (float)sw;
+    float ideal_scale = (scale_w < scale_h) ? scale_w : scale_h;
+    if (ideal_scale > 2.0f) ideal_scale = 2.0f;
+    if (ideal_scale < 0.1f) ideal_scale = 0.1f;
 
-    uint32_t out_w = (uint32_t)(sh * scale + 0.5f) & ~1u; // 保证偶数
-    uint32_t out_h = (uint32_t)(sw * scale + 0.5f) & ~1u;
+    uint32_t in_block_w = sw;
+    uint32_t in_block_h = sh;
+    uint32_t in_off_x = 0;
+    uint32_t in_off_y = 0;
+    uint32_t scale_units = ppa_scale_units_floor(ideal_scale);
 
-    // 偏移：水平方向始终居中；垂直方向 ADV 模式下整体向底部平移
-    uint32_t off_x = (PANEL_PHYS_W - out_w) / 2;
-    uint32_t off_y = (PANEL_PHYS_H - avail_phys_h) + (avail_phys_h - out_h) / 2;
+    const uint32_t ideal_out_w = ((uint32_t)((float)sh * ideal_scale + 0.5f)) & ~1u;
+    const uint32_t ideal_out_h = ((uint32_t)((float)sw * ideal_scale + 0.5f)) & ~1u;
+    const bool intended_fullscreen = (ideal_out_w == target_w && ideal_out_h == target_h);
+
+    if (intended_fullscreen) {
+        const uint32_t cover_units_w = ppa_scale_units_ceil_ratio(target_w, sh);
+        const uint32_t cover_units_h = ppa_scale_units_ceil_ratio(target_h, sw);
+        scale_units = (cover_units_w > cover_units_h) ? cover_units_w : cover_units_h;
+
+        in_block_h = ppa_crop_dim_for_target(sh, target_w, scale_units);
+        in_block_w = ppa_crop_dim_for_target(sw, target_h, scale_units);
+        in_off_x = (sw > in_block_w) ? ((sw - in_block_w) / 2) : 0;
+        in_off_y = (sh > in_block_h) ? ((sh - in_block_h) / 2) : 0;
+    }
+
+    const float scale = (float)scale_units / (float)PPA_SRM_SCALE_DEN;
+    const uint32_t out_w = ppa_scaled_dim(in_block_h, scale_units);
+    const uint32_t out_h = ppa_scaled_dim(in_block_w, scale_units);
+    const uint32_t off_x = (target_w > out_w) ? ((target_w - out_w) / 2) : 0;
+    const uint32_t off_y = (PANEL_PHYS_H - avail_phys_h) +
+                           ((target_h > out_h) ? ((target_h - out_h) / 2) : 0);
 
     static unsigned s_log_sw = 0;
     static unsigned s_log_sh = 0;
+    static uint32_t s_log_crop_w = 0;
+    static uint32_t s_log_crop_h = 0;
+    static uint32_t s_log_crop_x = 0;
+    static uint32_t s_log_crop_y = 0;
     static uint32_t s_log_avail_h = 0;
     static uint32_t s_log_out_w = 0;
     static uint32_t s_log_out_h = 0;
+    static uint32_t s_log_scale_units = 0;
     static int s_log_adv = -1;
     const int adv_enabled = (a && a->adv_live_enabled) ? 1 : 0;
-    if (s_log_sw != sw || s_log_sh != sh || s_log_avail_h != avail_phys_h ||
-        s_log_out_w != out_w || s_log_out_h != out_h || s_log_adv != adv_enabled) {
+    if (s_log_sw != sw || s_log_sh != sh || s_log_crop_w != in_block_w ||
+        s_log_crop_h != in_block_h || s_log_crop_x != in_off_x || s_log_crop_y != in_off_y ||
+        s_log_avail_h != avail_phys_h || s_log_out_w != out_w || s_log_out_h != out_h ||
+        s_log_scale_units != scale_units || s_log_adv != adv_enabled) {
         const unsigned scale_milli = (unsigned)(scale * 1000.0f + 0.5f);
         ESP_LOGI(TAG,
-                 "display scale: src=%ux%u phys=%ux%u avail_h=%u out=%ux%u off=%u,%u scale=%u.%03u adv=%d",
-                 sw, sh, PANEL_PHYS_W, PANEL_PHYS_H, (unsigned)avail_phys_h,
+                 "display scale: src=%ux%u crop=%ux%u+%u,%u phys=%ux%u avail_h=%u out=%ux%u off=%u,%u scale=%u.%03u q=%u/%u adv=%d",
+                 sw, sh, (unsigned)in_block_w, (unsigned)in_block_h,
+                 (unsigned)in_off_x, (unsigned)in_off_y,
+                 PANEL_PHYS_W, PANEL_PHYS_H, (unsigned)avail_phys_h,
                  (unsigned)out_w, (unsigned)out_h, (unsigned)off_x, (unsigned)off_y,
-                 scale_milli / 1000, scale_milli % 1000, adv_enabled);
+                 scale_milli / 1000, scale_milli % 1000,
+                 (unsigned)scale_units, (unsigned)PPA_SRM_SCALE_DEN, adv_enabled);
         s_log_sw = sw;
         s_log_sh = sh;
+        s_log_crop_w = in_block_w;
+        s_log_crop_h = in_block_h;
+        s_log_crop_x = in_off_x;
+        s_log_crop_y = in_off_y;
         s_log_avail_h = avail_phys_h;
         s_log_out_w = out_w;
         s_log_out_h = out_h;
+        s_log_scale_units = scale_units;
         s_log_adv = adv_enabled;
     }
 
-    // 性能: panel_buf 在 SPIRAM 里, 整屏 1.8MB memset 大约 30~60ms.
-    // 输出图像与物理屏对齐时根本没有黑边, 直接跳过清零;
-    // 否则只清四条边的 strip, 避免每帧都把整个 framebuffer 写一遍.
     if (off_x == 0 && off_y == 0 &&
         out_w == PANEL_PHYS_W && out_h == PANEL_PHYS_H) {
-        // no border, skip clear
+        // The scaled frame fully covers the physical panel.
     } else {
-        const size_t row_bytes = (size_t)PANEL_PHYS_W * 2; // RGB565
-        // top strip
+        const size_t row_bytes = (size_t)PANEL_PHYS_W * 2;
+
         if (off_y > 0) {
             panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
             memset(a->panel_buf, 0, (size_t)off_y * row_bytes);
             panel_cache_msync_phys_rect(a, 0, 0, PANEL_PHYS_W, off_y, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
-        // bottom strip
+
         uint32_t bottom_y = off_y + out_h;
         if (bottom_y < PANEL_PHYS_H) {
             panel_cache_msync_phys_rect(a, 0, bottom_y, PANEL_PHYS_W, PANEL_PHYS_H - bottom_y,
@@ -160,9 +237,9 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
             panel_cache_msync_phys_rect(a, 0, bottom_y, PANEL_PHYS_W, PANEL_PHYS_H - bottom_y,
                                         ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         }
-        // left/right strips inside [off_y, bottom_y)
+
         if (off_x > 0 || (off_x + out_w) < PANEL_PHYS_W) {
-            const size_t left_bytes  = (size_t)off_x * 2;
+            const size_t left_bytes = (size_t)off_x * 2;
             const size_t right_start = (size_t)(off_x + out_w) * 2;
             const size_t right_bytes = (size_t)PANEL_PHYS_W * 2 - right_start;
             if (left_bytes) {
@@ -174,7 +251,7 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
             }
             for (uint32_t y = off_y; y < bottom_y; y++) {
                 uint8_t *row = a->panel_buf + (size_t)y * row_bytes;
-                if (left_bytes)  memset(row, 0, left_bytes);
+                if (left_bytes) memset(row, 0, left_bytes);
                 if (right_bytes) memset(row + right_start, 0, right_bytes);
             }
             if (left_bytes) {
@@ -187,53 +264,40 @@ esp_err_t ppa_scale_rotate(app_t *a, const void *src_buf, size_t src_size,
         }
     }
 
-    // PPA 操作写到居中区域
-    // ppa_srm 要求 out buffer 是完整的 out_pic_w x out_pic_h 区域
-    // 我们用整个 panel_buf 作为输出图像 (PANEL_PHYS_W x PANEL_PHYS_H),
-    // 通过 out.block offset 指定起始坐标.
-    //
-    // 性能: 这里以前对 src_buf 做 esp_cache_msync(C2M, 1.8MB) 的写回,
-    // 但 src_buf 是 JPEG 引擎通过 DMA 写入 SPIRAM 的, CPU 全程未触碰,
-    // 不存在脏的 CPU 缓存行需要写回; PPA 也直接走 DMA 读 SPIRAM, 不依赖
-    // CPU 缓存, 所以这次 1.8MB 缓存遍历是纯开销, 移除.
-    // YUYV/RGBP 这类 CPU 生成的 RGB565 输入由调用方在转换后做 C2M.
     (void)src_size;
 
     ppa_srm_oper_config_t cfg = {};
-    cfg.in.buffer       = src_buf;
-    cfg.in.pic_w        = sw;
-    cfg.in.pic_h        = sh;
-    cfg.in.block_w      = sw;
-    cfg.in.block_h      = sh;
-    cfg.in.block_offset_x = 0;
-    cfg.in.block_offset_y = 0;
-    cfg.in.srm_cm       = in_cm;
-    cfg.in.yuv_range    = PPA_COLOR_RANGE_LIMIT;
-    cfg.in.yuv_std      = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+    cfg.in.buffer = src_buf;
+    cfg.in.pic_w = sw;
+    cfg.in.pic_h = sh;
+    cfg.in.block_w = in_block_w;
+    cfg.in.block_h = in_block_h;
+    cfg.in.block_offset_x = in_off_x;
+    cfg.in.block_offset_y = in_off_y;
+    cfg.in.srm_cm = in_cm;
+    cfg.in.yuv_range = PPA_COLOR_RANGE_LIMIT;
+    cfg.in.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
 
-    cfg.out.buffer      = a->panel_buf;
+    cfg.out.buffer = a->panel_buf;
     cfg.out.buffer_size = PANEL_BUF_SIZE;
-    cfg.out.pic_w       = PANEL_PHYS_W;
-    cfg.out.pic_h       = PANEL_PHYS_H;
+    cfg.out.pic_w = PANEL_PHYS_W;
+    cfg.out.pic_h = PANEL_PHYS_H;
     cfg.out.block_offset_x = off_x;
     cfg.out.block_offset_y = off_y;
-    cfg.out.srm_cm      = PPA_SRM_COLOR_MODE_RGB565;
-    cfg.out.yuv_range   = PPA_COLOR_RANGE_LIMIT;
-    cfg.out.yuv_std     = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+    cfg.out.srm_cm = PPA_SRM_COLOR_MODE_RGB565;
+    cfg.out.yuv_range = PPA_COLOR_RANGE_LIMIT;
+    cfg.out.yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601;
 
-    cfg.rotation_angle  = PPA_SRM_ROTATION_ANGLE_90;
-    cfg.scale_x         = scale;
-    cfg.scale_y         = scale;
-    cfg.rgb_swap        = 0;
-    cfg.byte_swap       = 0;
-    cfg.mode            = PPA_TRANS_MODE_BLOCKING;
+    cfg.rotation_angle = PPA_SRM_ROTATION_ANGLE_90;
+    cfg.scale_x = scale;
+    cfg.scale_y = scale;
+    cfg.rgb_swap = 0;
+    cfg.byte_swap = 0;
+    cfg.mode = PPA_TRANS_MODE_BLOCKING;
 
     return ppa_do_scale_rotate_mirror(a->ppa, &cfg);
 }
 
-// ===================================================================
-// Panel direct blit (整个物理屏)
-// ===================================================================
 esp_err_t panel_blit(app_t *a)
 {
     if (a && a->panel_buf) {
@@ -253,6 +317,7 @@ void panel_clear(app_t *a)
     panel_mark_dirty_phys(a, 0, 0, PANEL_PHYS_W, PANEL_PHYS_H);
     panel_blit(a);
 }
+
 size_t mjpeg_valid_len(const uint8_t *data, size_t len)
 {
     if (!data || len < 4 || data[0] != 0xFF || data[1] != 0xD8) return 0;
@@ -262,8 +327,6 @@ size_t mjpeg_valid_len(const uint8_t *data, size_t len)
     return 0;
 }
 
-// YUYV (Y0 U Y1 V) -> RGB565 软件转换
-// ESP32-P4 chip rev < 3.00 时 PPA SRM 不支持 YUV422 输入，必须先转 RGB565
 static inline uint16_t yuv2rgb565(int y, int u, int v)
 {
     int c = y - 16;
@@ -282,9 +345,9 @@ void yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs)
 {
     for (size_t i = 0; i < pixel_pairs; i++) {
         const int y0 = src[0];
-        const int u  = src[1];
+        const int u = src[1];
         const int y1 = src[2];
-        const int v  = src[3];
+        const int v = src[3];
         dst[0] = yuv2rgb565(y0, u, v);
         dst[1] = yuv2rgb565(y1, u, v);
         src += 4;
@@ -295,9 +358,9 @@ void yuyv_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs)
 void uyvy_to_rgb565(const uint8_t *src, uint16_t *dst, size_t pixel_pairs)
 {
     for (size_t i = 0; i < pixel_pairs; i++) {
-        const int u  = src[0];
+        const int u = src[0];
         const int y0 = src[1];
-        const int v  = src[2];
+        const int v = src[2];
         const int y1 = src[3];
         dst[0] = yuv2rgb565(y0, u, v);
         dst[1] = yuv2rgb565(y1, u, v);

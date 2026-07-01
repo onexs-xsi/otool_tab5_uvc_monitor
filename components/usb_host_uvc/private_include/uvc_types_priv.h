@@ -61,6 +61,7 @@ struct uvc_host_stream_s {
     struct {
         uvc_stream_bulk_packet_type_t next_bulk_packet; // Bulk only: next expected packet
         bool skip_current_frame;                        // Flag to skip current frame. An error has occurred in the stream
+        bool mjpeg_suspect_current_frame;               // ISOC MJPEG only: saw a recoverable payload warning in current frame
         uint8_t current_frame_id;                       // Frame ID can be only 0 or 1. But we also allow setting it to invalid value = 2.
     } single_thread; // Single thread members are only accessed from 1 thread, so they do not need protection
 };

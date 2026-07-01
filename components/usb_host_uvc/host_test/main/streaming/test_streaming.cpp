@@ -5,7 +5,9 @@
  */
 
 #include <stdio.h>
+#include <array>
 #include <functional>
+#include <vector>
 #include <catch2/catch_test_macros.hpp>
 
 #include "usb/usb_types_stack.h"
@@ -24,6 +26,7 @@
 // frame-sending function, allowing `run_streaming_frame_reconstruction_scenario` to run identical tests
 // with either transfer method.
 std::function<void(size_t, void *, std::span<const uint8_t>, uint8_t, bool, bool, bool)> send_frame_function;
+bool expect_uvc_error_bit_to_drop_frame;
 inline void send_function_wrapper(size_t transfer_size, void *transfer_context, std::span<const uint8_t> data, uint8_t frame_id = 0, bool error_in_sof = false, bool error_in_eof = false, bool eof_in_sof = false)
 {
     send_frame_function(transfer_size, transfer_context, data, frame_id, error_in_sof, error_in_eof, eof_in_sof);
@@ -93,45 +96,48 @@ void run_streaming_frame_reconstruction_scenario(void)
 
             WHEN("The frame contains error in SoF") {
                 send_function_wrapper(1024, &stream, std::span(logo_jpg), 0, true);
-                THEN("The frame callback is not called") {
-                    REQUIRE(frame_callback_called == 0);
+                const int expected_after_error_frame = expect_uvc_error_bit_to_drop_frame ? 0 : 1;
+                THEN("The frame callback follows the transport-specific error policy") {
+                    REQUIRE(frame_callback_called == expected_after_error_frame);
                 }
 
                 AND_WHEN("Next frame is send") {
                     send_function_wrapper(1024, &stream, std::span(logo_jpg), 1);
 
                     THEN("The frame callback is called with expected frame data") {
-                        REQUIRE(frame_callback_called == 1);
+                        REQUIRE(frame_callback_called == expected_after_error_frame + 1);
                     }
                 }
             }
 
             WHEN("The frame contains error in EoF") {
                 send_function_wrapper(1024, &stream, std::span(logo_jpg), 0, false, true);
-                THEN("The frame callback is not called") {
-                    REQUIRE(frame_callback_called == 0);
+                const int expected_after_error_frame = expect_uvc_error_bit_to_drop_frame ? 0 : 1;
+                THEN("The frame callback follows the transport-specific error policy") {
+                    REQUIRE(frame_callback_called == expected_after_error_frame);
                 }
 
                 AND_WHEN("Next frame is send") {
                     send_function_wrapper(1024, &stream, std::span(logo_jpg), 1);
 
                     THEN("The frame callback is called with expected frame data") {
-                        REQUIRE(frame_callback_called == 1);
+                        REQUIRE(frame_callback_called == expected_after_error_frame + 1);
                     }
                 }
             }
 
             WHEN("The frame contains error in SoF and EoF") {
                 send_function_wrapper(1024, &stream, std::span(logo_jpg), 0, true, true);
-                THEN("The frame callback is not called") {
-                    REQUIRE(frame_callback_called == 0);
+                const int expected_after_error_frame = expect_uvc_error_bit_to_drop_frame ? 0 : 1;
+                THEN("The frame callback follows the transport-specific error policy") {
+                    REQUIRE(frame_callback_called == expected_after_error_frame);
                 }
 
                 AND_WHEN("Next frame is send") {
                     send_function_wrapper(1024, &stream, std::span(logo_jpg), 1);
 
                     THEN("The frame callback is called with expected frame data") {
-                        REQUIRE(frame_callback_called == 1);
+                        REQUIRE(frame_callback_called == expected_after_error_frame + 1);
                     }
                 }
             }
@@ -222,6 +228,7 @@ SCENARIO("Bulk stream frame reconstruction", "[streaming][bulk]")
 {
     /* Tests that are same for ISOC and BULK */
     send_frame_function = test_streaming_bulk_send_frame;
+    expect_uvc_error_bit_to_drop_frame = true;
     run_streaming_frame_reconstruction_scenario();
 
     /* BULK specific tests */
@@ -252,15 +259,135 @@ SCENARIO("Isochronous stream frame reconstruction", "[streaming][isoc]")
 {
     /* Tests that are same for ISOC and BULK */
     send_frame_function = test_streaming_isoc_send_frame;
+    expect_uvc_error_bit_to_drop_frame = false;
     run_streaming_frame_reconstruction_scenario();
 
     /* ISOC specific tests */
-    /*
-    @todo ISOC test
-    - Missed SoF
-    - Missed EoF
-    - Error in data packet
-    - Messed up frame_id
-    - Unaligned USB transfer sizes
-    */
+    struct expected_frame_context {
+        int callback_called;
+        const std::vector<uint8_t> *expected_data;
+    };
+
+    auto prepare_stream = [](uvc_stream_t *stream, expected_frame_context *ctx) {
+        stream->constant.cb_arg = ctx;
+        stream->constant.frame_cb = [](const uvc_host_frame_t *frame, void *user_ctx) -> bool {
+            auto *ctx = static_cast<expected_frame_context *>(user_ctx);
+            ctx->callback_called++;
+
+            REQUIRE(frame->data_len == ctx->expected_data->size());
+            std::vector<uint8_t> frame_data(frame->data, frame->data + frame->data_len);
+            REQUIRE(frame_data == *ctx->expected_data);
+
+            return true;
+        };
+        REQUIRE(uvc_host_stream_unpause(stream) == ESP_OK);
+        REQUIRE(uvc_frame_allocate(stream, 1, 100 * 1024, 0, NULL) == ESP_OK);
+        uvc_frame_format_update(stream, &logo_jpg_format);
+    };
+
+    GIVEN("Streaming enabled and frame allocated for isoc MJPEG recovery") {
+        std::vector<uint8_t> expected_logo(logo_jpg.begin(), logo_jpg.end());
+        expected_frame_context ctx = {
+            .callback_called = 0,
+            .expected_data = &expected_logo,
+        };
+        uvc_stream_t stream = {};
+        prepare_stream(&stream, &ctx);
+
+        WHEN("A complete MJPEG frame has UVC error bit in a middle isoc packet") {
+            test_streaming_isoc_send_frame_with_data_error(1024, &stream, std::span(logo_jpg), 0, false, false, false, 3);
+
+            THEN("The complete MJPEG frame is still delivered") {
+                REQUIRE(ctx.callback_called == 1);
+            }
+        }
+
+        REQUIRE(uvc_frame_are_all_returned(&stream));
+        uvc_frame_free(&stream);
+    }
+
+    GIVEN("Streaming enabled and frame allocated for isoc SOI resync") {
+        std::vector<uint8_t> expected_logo(logo_jpg.begin(), logo_jpg.end());
+        expected_frame_context ctx = {
+            .callback_called = 0,
+            .expected_data = &expected_logo,
+        };
+        uvc_stream_t stream = {};
+        prepare_stream(&stream, &ctx);
+
+        WHEN("An MJPEG frame starts with a short garbage prefix before SOI") {
+            std::vector<uint8_t> prefixed_logo = {0xb9, 0x09};
+            prefixed_logo.insert(prefixed_logo.end(), logo_jpg.begin(), logo_jpg.end());
+            test_streaming_isoc_send_frame(1024, &stream, std::span(prefixed_logo));
+
+            THEN("The prefix is skipped and the valid MJPEG frame is delivered") {
+                REQUIRE(ctx.callback_called == 1);
+            }
+        }
+
+        REQUIRE(uvc_frame_are_all_returned(&stream));
+        uvc_frame_free(&stream);
+    }
+
+    GIVEN("Streaming enabled and frame allocated for isoc incomplete MJPEG rejection") {
+        std::vector<uint8_t> expected_logo(logo_jpg.begin(), logo_jpg.end());
+        expected_frame_context ctx = {
+            .callback_called = 0,
+            .expected_data = &expected_logo,
+        };
+        uvc_stream_t stream = {};
+        prepare_stream(&stream, &ctx);
+
+        WHEN("An MJPEG frame reaches UVC EOF but is missing the JPEG EOI marker") {
+            std::vector<uint8_t> missing_eoi_logo(logo_jpg.begin(), logo_jpg.end() - 2);
+            test_streaming_isoc_send_frame(1024, &stream, std::span(missing_eoi_logo));
+
+            THEN("The incomplete MJPEG frame is dropped") {
+                REQUIRE(ctx.callback_called == 0);
+            }
+
+            AND_WHEN("The next frame is complete") {
+                test_streaming_isoc_send_frame(1024, &stream, std::span(logo_jpg), 1);
+
+                THEN("The stream recovers and delivers the next frame") {
+                    REQUIRE(ctx.callback_called == 1);
+                }
+            }
+        }
+
+        REQUIRE(uvc_frame_are_all_returned(&stream));
+        uvc_frame_free(&stream);
+    }
+
+    GIVEN("Streaming enabled and frame allocated for isoc short MJPEG SOF rejection") {
+        std::vector<uint8_t> expected_logo(logo_jpg.begin(), logo_jpg.end());
+        expected_frame_context ctx = {
+            .callback_called = 0,
+            .expected_data = &expected_logo,
+        };
+        uvc_stream_t stream = {};
+        prepare_stream(&stream, &ctx);
+
+        WHEN("An MJPEG SOF packet has no payload data") {
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span<const uint8_t>(), 0, false);
+
+            THEN("No frame is delivered and no frame buffer is retained") {
+                REQUIRE(ctx.callback_called == 0);
+                REQUIRE(uvc_frame_are_all_returned(&stream));
+            }
+        }
+
+        AND_WHEN("An MJPEG SOF packet has only one payload byte and EOF") {
+            const std::array<uint8_t, 1> one_byte_payload = {JPEG_MARKER};
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span(one_byte_payload), 0, true);
+
+            THEN("No incomplete MJPEG frame is delivered") {
+                REQUIRE(ctx.callback_called == 0);
+                REQUIRE(uvc_frame_are_all_returned(&stream));
+            }
+        }
+
+        REQUIRE(uvc_frame_are_all_returned(&stream));
+        uvc_frame_free(&stream);
+    }
 }

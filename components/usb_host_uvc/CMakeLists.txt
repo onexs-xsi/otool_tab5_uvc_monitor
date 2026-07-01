@@ -24,8 +24,13 @@ idf_component_register(SRCS
 option(TAB5_DIAG_SKIP_INITIAL_PROBE_GET "Skip the initial UVC VS_PROBE GET_CUR for compatibility diagnosis" OFF)
 set(TAB5_DIAG_FORCE_PROBE_LEN "0" CACHE STRING "Force UVC VS probe/commit control length for compatibility diagnosis; 0 uses bcdUVC")
 option(TAB5_DIAG_CTRL_TRACE "Log every EP0 control transfer submit/completion" OFF)
+option(TAB5_DIAG_UVC_ISOC "Enable UVC ISOC diagnostic logs for compatibility diagnosis" OFF)
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     TAB5_DIAG_SKIP_INITIAL_PROBE_GET=$<BOOL:${TAB5_DIAG_SKIP_INITIAL_PROBE_GET}>
     TAB5_DIAG_FORCE_PROBE_LEN=${TAB5_DIAG_FORCE_PROBE_LEN}
     TAB5_DIAG_CTRL_TRACE=$<BOOL:${TAB5_DIAG_CTRL_TRACE}>)
+
+if(TAB5_DIAG_UVC_ISOC)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE UVC_ISOC_DIAG_ENABLED=1)
+endif()
