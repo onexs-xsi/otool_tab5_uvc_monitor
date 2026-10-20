@@ -41,7 +41,7 @@ static void ui_set_panel_style(lv_obj_t *obj, lv_color_t bg, uint8_t radius)
     lv_obj_set_style_shadow_ofs_y(obj, 6, 0);
     lv_obj_set_style_shadow_opa(obj, LV_OPA_10, 0);
     lv_obj_set_style_shadow_color(obj, lv_color_make(0x64, 0x74, 0x8B), 0);
-    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(obj, false);
 }
 
 static lv_obj_t *ui_create_info_label(lv_obj_t *parent, const char *text, lv_color_t color, const lv_font_t *font)
@@ -233,8 +233,8 @@ static void ui_check_modal_create_locked(app_t *a, lv_obj_t **row_labels, size_t
     lv_obj_set_style_border_width(a->check_overlay, 0, 0);
     lv_obj_set_style_radius(a->check_overlay, 0, 0);
     lv_obj_set_style_pad_all(a->check_overlay, 0, 0);
-    lv_obj_clear_flag(a->check_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(a->check_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(a->check_overlay, false);
+    lv_obj_set_clickable(a->check_overlay, true);
 
     lv_obj_t *panel = lv_obj_create(a->check_overlay);
     lv_obj_set_size(panel, 860, 560);
@@ -282,8 +282,8 @@ static void ui_check_modal_create_locked(app_t *a, lv_obj_t **row_labels, size_t
         lv_obj_set_style_border_color(row, lv_color_make(0xE2, 0xE8, 0xF0), 0);
         lv_obj_set_style_radius(row, 9, 0);
         lv_obj_set_style_pad_left(row, 12, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_scrollable(row, false);
+        lv_obj_set_clickable(row, false);
         row_labels[i] = lv_label_create(row);
         lv_label_set_text(row_labels[i], row_text);
         lv_obj_set_style_text_color(row_labels[i], lv_color_make(0x64, 0x74, 0x8B), 0);
@@ -463,15 +463,15 @@ static void show_not_recommended_confirm_dialog(app_t *a, int idx)
     lv_obj_set_style_border_width(a->not_recommended_confirm_overlay, 0, 0);
     lv_obj_set_style_radius(a->not_recommended_confirm_overlay, 0, 0);
     lv_obj_set_style_pad_all(a->not_recommended_confirm_overlay, 0, 0);
-    lv_obj_clear_flag(a->not_recommended_confirm_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(a->not_recommended_confirm_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(a->not_recommended_confirm_overlay, false);
+    lv_obj_set_clickable(a->not_recommended_confirm_overlay, true);
 
     lv_obj_t *panel = lv_obj_create(a->not_recommended_confirm_overlay);
     lv_obj_set_size(panel, 720, 370);
     lv_obj_center(panel);
     ui_set_panel_style(panel, lv_color_white(), 16);
     lv_obj_set_style_pad_all(panel, 24, 0);
-    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(panel, false);
 
     lv_obj_t *title = ui_create_info_label(panel, "Open video stream?",
                                            lv_color_make(0x0F, 0x17, 0x2A),
@@ -532,8 +532,8 @@ static void show_stream_opening_overlay(app_t *a, int idx)
         a->not_recommended_confirm_overlay = overlay;
         lv_obj_set_size(overlay, lv_pct(100), lv_pct(100));
         lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
-        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_flag(overlay, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_scrollable(overlay, false);
+        lv_obj_set_clickable(overlay, true);
     } else {
         ui_reset_touch_cache(a);
         lv_obj_clean(overlay);
@@ -985,7 +985,7 @@ static void adv_build_row(app_t *a, lv_obj_t *parent, int idx)
     lv_obj_set_style_pad_row(row, 3, 0);
     lv_obj_set_layout(row, LV_LAYOUT_FLEX);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(row, false);
 
     char hdr[96];
     snprintf(hdr, sizeof(hdr), "%s  [%ld..%ld]  cur=%ld",
@@ -1018,7 +1018,7 @@ static void adv_build_row(app_t *a, lv_obj_t *parent, int idx)
         lv_obj_set_style_border_width(stepper, 0, 0);
         lv_obj_set_style_pad_all(stepper, 0, 0);
         lv_obj_set_style_pad_column(stepper, 8, 0);
-        lv_obj_clear_flag(stepper, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(stepper, false);
         lv_obj_set_layout(stepper, LV_LAYOUT_FLEX);
         lv_obj_set_flex_flow(stepper, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(stepper, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1099,8 +1099,8 @@ static void btn_advanced_cb(lv_event_t *e)
     lv_obj_set_style_border_width(a->adv_overlay, 0, 0);
     lv_obj_set_style_radius(a->adv_overlay, 0, 0);
     lv_obj_set_style_pad_all(a->adv_overlay, 0, 0);
-    lv_obj_clear_flag(a->adv_overlay, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(a->adv_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(a->adv_overlay, false);
+    lv_obj_set_clickable(a->adv_overlay, true);
     lv_obj_add_event_cb(a->adv_overlay, adv_overlay_bg_cb, LV_EVENT_CLICKED, a);
 
     a->adv_panel = lv_obj_create(a->adv_overlay);
@@ -1199,7 +1199,7 @@ void ui_build_stream_overlay(app_t *a)
         a->stream_status_lbl = nullptr;
     }
     if (a->sel_screen) {
-        lv_obj_add_flag(a->sel_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(a->sel_screen, true);
     }
 
     lv_obj_t *scr = lv_scr_act();
@@ -1210,7 +1210,7 @@ void ui_build_stream_overlay(app_t *a)
     lv_obj_set_style_border_width(a->stream_overlay, 0, 0);
     lv_obj_set_style_radius(a->stream_overlay, 0, 0);
     lv_obj_set_style_pad_all(a->stream_overlay, 0, 0);
-    lv_obj_clear_flag(a->stream_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(a->stream_overlay, false);
 
     lv_obj_t *badge = lv_obj_create(a->stream_overlay);
     lv_obj_set_size(badge, 238, 52);
@@ -1221,7 +1221,7 @@ void ui_build_stream_overlay(app_t *a)
     lv_obj_set_style_border_color(badge, lv_color_make(0x22, 0xD3, 0xEE), 0);
     lv_obj_set_style_radius(badge, 14, 0);
     lv_obj_set_style_pad_all(badge, 10, 0);
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(badge, false);
 
     char badge_text[80];
     snprintf(badge_text, sizeof(badge_text), "LIVE%s%s",
@@ -1242,7 +1242,7 @@ void ui_build_stream_overlay(app_t *a)
         lv_obj_set_style_border_width(a->stream_audio_panel, 1, 0);
         lv_obj_set_style_border_color(a->stream_audio_panel, lv_color_make(0x34, 0xD3, 0x99), 0);
         lv_obj_set_style_radius(a->stream_audio_panel, 16, 0);
-        lv_obj_clear_flag(a->stream_audio_panel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_scrollable(a->stream_audio_panel, false);
         lv_obj_t *audio_lbl = lv_label_create(a->stream_audio_panel);
         lv_label_set_text(audio_lbl, "UAC audio active\nRecord/play panel remains on video");
         lv_obj_set_style_text_color(audio_lbl, lv_color_make(0xD1, 0xFA, 0xE5), 0);
@@ -1313,7 +1313,7 @@ void ui_destroy_stream_overlay(app_t *a)
     a->stream_status_lbl = nullptr;
     a->adv_status_lbl = nullptr;
     if (a->sel_screen) {
-        lv_obj_clear_flag(a->sel_screen, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(a->sel_screen, false);
     }
     otool_lvgl_port_unlock();
 }
@@ -1440,7 +1440,7 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_bg_opa(a->sel_screen, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(a->sel_screen, 0, 0);
     lv_obj_set_style_pad_all(a->sel_screen, 0, 0);
-    lv_obj_clear_flag(a->sel_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(a->sel_screen, false);
 
     lv_obj_t *left_panel = lv_obj_create(a->sel_screen);
     lv_obj_set_size(left_panel, left_w, content_h);
@@ -1454,7 +1454,7 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_bg_color(accent_bar, lv_color_make(0x25, 0x63, 0xEB), 0);
     lv_obj_set_style_border_width(accent_bar, 0, 0);
     lv_obj_set_style_radius(accent_bar, 3, 0);
-    lv_obj_clear_flag(accent_bar, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(accent_bar, false);
 
     a->title_lbl = lv_label_create(left_panel);
     lv_label_set_text(a->title_lbl, "OTool Tab5 UVC Monitor");
@@ -1524,8 +1524,8 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_border_color(uac_row, lv_color_make(0xE2, 0xE8, 0xF0), 0);
     lv_obj_set_style_pad_all(uac_row, 12, 0);
     lv_obj_set_style_radius(uac_row, 14, 0);
-    lv_obj_clear_flag(uac_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(uac_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(uac_row, false);
+    lv_obj_set_clickable(uac_row, true);
     lv_obj_add_event_cb(uac_row, uac_option_click_cb, LV_EVENT_CLICKED, a);
 
     a->uac_lbl = lv_label_create(uac_row);
@@ -1538,8 +1538,8 @@ void ui_build_selection(app_t *a)
     a->uac_switch = lv_switch_create(uac_row);
     lv_obj_set_size(a->uac_switch, 78, 36);
     lv_obj_align(a->uac_switch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_flag(a->uac_switch, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(a->uac_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_clickable(a->uac_switch, true);
+    lv_obj_set_event_bubble(a->uac_switch, false);
     lv_obj_add_event_cb(a->uac_switch, uac_switch_cb, LV_EVENT_VALUE_CHANGED, a);
     lv_obj_t *uac_switch_hit = lv_obj_create(uac_row);
     lv_obj_set_size(uac_switch_hit, 96, 52);
@@ -1547,9 +1547,9 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_bg_opa(uac_switch_hit, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(uac_switch_hit, 0, 0);
     lv_obj_set_style_pad_all(uac_switch_hit, 0, 0);
-    lv_obj_clear_flag(uac_switch_hit, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(uac_switch_hit, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_flag(uac_switch_hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(uac_switch_hit, false);
+    lv_obj_set_event_bubble(uac_switch_hit, false);
+    lv_obj_set_clickable(uac_switch_hit, true);
     lv_obj_add_event_cb(uac_switch_hit, uac_option_click_cb, LV_EVENT_CLICKED, a);
 
     // ADVANCED：开关决定视频阶段是否常驻显示右侧参数侧栏；Configuration 用于进入前调整。
@@ -1562,7 +1562,7 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_border_color(a->adv_container, lv_color_make(0xE2, 0xE8, 0xF0), 0);
     lv_obj_set_style_pad_all(a->adv_container, 10, 0);
     lv_obj_set_style_radius(a->adv_container, 14, 0);
-    lv_obj_clear_flag(a->adv_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(a->adv_container, false);
 
     lv_obj_t *adv_toggle_row = lv_obj_create(a->adv_container);
     lv_obj_set_width(adv_toggle_row, lv_pct(100));
@@ -1570,8 +1570,8 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_bg_opa(adv_toggle_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(adv_toggle_row, 0, 0);
     lv_obj_set_style_pad_all(adv_toggle_row, 0, 0);
-    lv_obj_clear_flag(adv_toggle_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(adv_toggle_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(adv_toggle_row, false);
+    lv_obj_set_clickable(adv_toggle_row, true);
     lv_obj_add_event_cb(adv_toggle_row, adv_option_click_cb, LV_EVENT_CLICKED, a);
 
     a->adv_lbl = lv_label_create(adv_toggle_row);
@@ -1584,8 +1584,8 @@ void ui_build_selection(app_t *a)
     a->adv_switch = lv_switch_create(adv_toggle_row);
     lv_obj_set_size(a->adv_switch, 78, 36);
     lv_obj_align(a->adv_switch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_flag(a->adv_switch, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(a->adv_switch, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_clickable(a->adv_switch, true);
+    lv_obj_set_event_bubble(a->adv_switch, false);
     lv_obj_add_state(a->adv_switch, LV_STATE_DISABLED);
     lv_obj_add_event_cb(a->adv_switch, adv_switch_cb, LV_EVENT_VALUE_CHANGED, a);
     lv_obj_t *adv_switch_hit = lv_obj_create(adv_toggle_row);
@@ -1594,9 +1594,9 @@ void ui_build_selection(app_t *a)
     lv_obj_set_style_bg_opa(adv_switch_hit, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(adv_switch_hit, 0, 0);
     lv_obj_set_style_pad_all(adv_switch_hit, 0, 0);
-    lv_obj_clear_flag(adv_switch_hit, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(adv_switch_hit, LV_OBJ_FLAG_EVENT_BUBBLE);
-    lv_obj_add_flag(adv_switch_hit, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_scrollable(adv_switch_hit, false);
+    lv_obj_set_event_bubble(adv_switch_hit, false);
+    lv_obj_set_clickable(adv_switch_hit, true);
     lv_obj_add_event_cb(adv_switch_hit, adv_option_click_cb, LV_EVENT_CLICKED, a);
 
     lv_obj_t *adv_scope_lbl = lv_label_create(a->adv_container);

@@ -1,5 +1,5 @@
     # This file was generated using idf.py save-defconfig. It can be edited manually.
-    # Espressif IoT Development Framework (ESP-IDF) 6.0.0 Project Minimal Configuration
+    # Espressif IoT Development Framework (ESP-IDF) 6.1 Project Minimal Configuration
     #
     # default:
 CONFIG_IDF_TARGET="esp32p4"
@@ -18,9 +18,6 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_FMT_TXT_LARGE=y
 CONFIG_LV_USE_FONT_COMPRESSED=y
-
-# PPA hardware-accelerated rotation (ESP32-P4 has PPA)
-CONFIG_LVGL_PORT_ENABLE_PPA=y
 
 # Partition table — custom for 16 MB flash
 CONFIG_PARTITION_TABLE_CUSTOM=y

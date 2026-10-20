@@ -66,20 +66,39 @@ The selection screen includes UVC information, Audio, Advanced, `CONFIGURATION`,
 
 ---
 
+## Build (ESP-IDF 6.1)
+
+The `esp32p4` target has been build-tested with ESP-IDF `v6.1` and GCC `15.2.0`. Initialize the pinned submodules, then run in an ESP-IDF 6.1 terminal:
+
+```powershell
+git submodule update --init --recursive
+idf.py build
+```
+
+On Windows, a PowerShell with the installed Python environment can first run `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`. Defaults are in `sdkconfig.defaults`; `sdkconfig` is generated during the build. The ESP32-P4 port supports PPA rotation automatically, enabled through the display initialization configuration.
+
+`dependencies.lock` pins the managed components used for this build: LVGL `9.6.0~1`, USB Host `1.6.0`, i2c_bus `1.5.2`, esp_codec_dev `1.5.11`, esp_lcd_touch `1.2.1`, and cmake_utilities `0.5.3`. Run `idf.py update-dependencies` to resolve the latest versions allowed by the component manifests again.
+
+The firmware output is `build/c145_tab5_as_camera_display_demo_idf600.bin`. LVGL flag calls, touch reads, and the LCD frame completion callback use the current APIs. A complete ESP-IDF 6.1 rebuild with `idf.py clean build` passed with 0 warnings and 0 errors.
+
+Run `python tools/test_mode_listing_policy.py` to check mode listing and confirmation messages; all 9 checks pass. Native display cropping, scaling, and generated-message checks also passed with ASan/UBSan. This verification does not include flashing or camera/audio hardware tests.
+
+---
+
 ## Local USB Components
 
 This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as local components instead of depending directly on the official UAC/UVC packages from IDF Component Manager. The two components are not equally forked: UVC contains project-required local extensions, while UAC is kept local so the USB audio/video components can be pinned and built with one stable layout.
 
-`components/usb_host_uac` has been merged to Espressif `esp-usb` master commit `606635bce0799165ad35fcd712fe6e891b385ed7` and is marked as component version `1.4.0`. Functionally it is kept close to official 1.4.0. The local copy mainly preserves the project-local component layout and manifest adaptation instead of relying on the `esp-usb` monorepo `override_path` layout. Upstream 1.4.0 UAC changes are included, such as relaxed driver task core-id validation and 64-bit intermediate arithmetic for audio packet-size calculation.
+`components/usb_host_uac` is synced to official release `1.5.0` (Espressif `esp-usb` commit `6d24137e14a4f6c8138662a7a074be16a899c2c6`). It includes fractional TX packet sizing for non-integer sample rates and USB packet sizing based on `bSubframeSize`. The local component layout and manifest adaptation avoid the monorepo's `override_path`. The new `subframe_size` member of `uac_host_dev_alt_param_t` should be accessed by name.
 
-`components/usb_host_uvc` remains based on official `usb_host_uvc 2.5.0`, but it is not a pure copy of the official component. It must stay local because of these project-specific changes:
+`components/usb_host_uvc` includes official release `2.6.0` (commit `516d55da0b051843f50eb36cbc7b9c9dda453a53`), including generic unit/terminal controls, EP0 recovery retries and STALL reporting, descriptor-length checks, and FID-only frame boundaries for cameras without EOF. These project extensions are retained:
 
 - **Additional format enums**: The official UVC component exposes formats such as `MJPEG`, `YUY2`, `H264`, and `H265`; the local component adds `MJPEG_SW`, `UYVY`, `GRAY8`, and `RGBP`, and parses `UYVY`, `Y800/GREY`, `RGBP`, and software-encoded MJPEG descriptors.
 - **MJPEG HW/SW split**: The local parser distinguishes `MJPEG(HW)` from `MJPEG(SW)` by reading the MJPEG format descriptor `bmFlags`. This affects the mode list, quality controls, and diagnostics. The official component treats both as plain `MJPEG`.
 - **VideoControl control-list API**: The local component adds `uvc_host_ctrl_info_t` and `uvc_host_get_ctrl_list()`, parsing PU/XU `bmControls` from VC descriptors. This lets the selection UI expose Advanced controls before a stream is opened; the official component has no matching public API.
 - **BULK URB sizing behavior**: Some cameras report `dwMaxPayloadTransferSize` close to a full frame size. The local BULK path prioritizes the caller-provided `urb_size` so it does not allocate unnecessarily large URBs.
 - **ISOC MJPEG complete-frame filtering**: The local `uvc_isoc.c` checks and trims MJPEG frames to EOI before callback, drops frames missing SOI/EOI, and rate-limits related logs so the upper JPEG decoder sees fewer corrupted frames.
-- **Upstream fixes retained**: The local UVC component also includes upstream payload-header EOH validation and the default 4x MPS behavior when `urb_size == 0`, while keeping the project extensions above.
+- **Timeout and frame-boundary protection**: In-flight EP0 transfers remain protected after a timeout so they cannot be reused or freed prematurely. FID-only boundaries use the same MJPEG validation as EOF, including rejection of frames without EOI.
 
 ---
 
@@ -89,7 +108,7 @@ This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as lo
 - Advanced controls are intended only for some of my custom UVC firmware builds, not standard UVC cameras; compatible firmware must also advertise the descriptor and respond correctly to UVC `GET_*` / `SET_CUR` transactions.
 - `MJPEG(HW) Quality` is not live-safe and is applied on the next stream start.
 - `REINIT` is ignored while streaming is already active.
-- The committed `sdkconfig` is tuned for this TAB5 / ESP32-P4 demo, but the generated firmware name still follows the CMake project name: `c145_tab5_as_camera_display_demo_idf600`.
+- The committed `sdkconfig.defaults` is tuned for this TAB5 / ESP32-P4 demo. The generated firmware name still follows the CMake project name: `c145_tab5_as_camera_display_demo_idf600`.
 
 ---
 
@@ -119,7 +138,7 @@ components/
   otool_tab5_component/   # TAB5 hardware init, panel, touch, and power
   otool_lvgl_idf_port/    # LVGL IDF port for display flush and touch input
   usb_host_uvc/           # USB UVC Host driver with local project extensions
-  usb_host_uac/           # USB UAC Host driver merged to upstream 1.4.0
+  usb_host_uac/           # USB UAC Host driver merged to upstream 1.5.0
 ```
 
 ---

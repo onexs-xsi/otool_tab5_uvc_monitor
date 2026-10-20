@@ -359,6 +359,38 @@ SCENARIO("Isochronous stream frame reconstruction", "[streaming][isoc]")
         uvc_frame_free(&stream);
     }
 
+    GIVEN("Streaming enabled for MJPEG frames with FID-only boundaries") {
+        const std::vector<uint8_t> complete_frame = {JPEG_MARKER, JPEG_SOI, 0x11, 0x22, JPEG_MARKER, 0xd9};
+        expected_frame_context ctx = {
+            .callback_called = 0,
+            .expected_data = &complete_frame,
+        };
+        uvc_stream_t stream = {};
+        prepare_stream(&stream, &ctx);
+
+        WHEN("A complete frame has no EOF and the next frame toggles FID") {
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span(complete_frame), 0, false);
+            REQUIRE(ctx.callback_called == 0);
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span(complete_frame), 1, true);
+
+            THEN("Both complete frames are delivered without exhausting the single frame buffer") {
+                REQUIRE(ctx.callback_called == 2);
+            }
+        }
+
+        WHEN("A frame without EOF is also missing its JPEG EOI marker") {
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span(complete_frame).first(4), 0, false);
+            test_streaming_isoc_send_single_packet(1024, &stream, std::span(complete_frame), 1, true);
+
+            THEN("The incomplete old frame is dropped and the next complete frame is delivered") {
+                REQUIRE(ctx.callback_called == 1);
+            }
+        }
+
+        REQUIRE(uvc_frame_are_all_returned(&stream));
+        uvc_frame_free(&stream);
+    }
+
     GIVEN("Streaming enabled and frame allocated for isoc short MJPEG SOF rejection") {
         std::vector<uint8_t> expected_logo(logo_jpg.begin(), logo_jpg.end());
         expected_frame_context ctx = {

@@ -55,7 +55,7 @@ void factory_ui_build_waiting(app_t *a)
     lv_obj_clean(scr);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(scr, false);
 
     s_factory_wait_lbl = lv_label_create(scr);
     lv_obj_set_style_text_color(s_factory_wait_lbl, lv_color_white(), 0);

@@ -18,7 +18,9 @@
 
 static const char *TAG = "uvc-isoc";
 static uint32_t s_usb_error_log_count;
+#ifdef CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR
 static uint32_t s_frame_error_log_count;
+#endif
 static uint32_t s_invalid_header_log_count;
 static uint32_t s_invalid_mjpeg_soi_log_count;
 static uint32_t s_invalid_mjpeg_log_count;
@@ -275,6 +277,80 @@ static bool mjpeg_frame_trim(uvc_host_frame_t *frame)
     return false;
 }
 
+static void isoc_complete_frame(uvc_stream_t *uvc_stream)
+{
+    bool return_frame = true; // In case streaming is stopped ATM, we must return the frame
+
+    // Check if the user did not stop the stream in the meantime
+    UVC_ENTER_CRITICAL();
+    uvc_host_frame_t *this_frame = uvc_stream->dynamic.current_frame;
+    uvc_stream->dynamic.current_frame = NULL; // Stop writing more data to this frame
+    const bool frame_complete = mjpeg_frame_trim(this_frame);
+    const bool skipped_frame = uvc_stream->single_thread.skip_current_frame;
+#if UVC_ISOC_DIAG_ENABLED
+    const bool suspect_frame = uvc_stream->single_thread.mjpeg_suspect_current_frame;
+#endif
+#if UVC_ISOC_DIAG_ENABLED
+    if (this_frame && this_frame->data_len > s_diag.max_frame_len) {
+        s_diag.max_frame_len = (uint32_t)this_frame->data_len;
+    }
+#endif
+
+    // Determine if we should invoke the frame callback:
+    // Only invoke the callback if streaming is active, a frame callback exists,
+    // and we have a valid frame to pass to the user.
+    const bool invoke_fb_callback = (uvc_stream->dynamic.streaming && uvc_stream->constant.frame_cb && this_frame && !skipped_frame && frame_complete);
+    UVC_EXIT_CRITICAL();
+
+    // 注意: ESP_LOGW 会走 vfprintf -> newlib 互斥锁, 在 portENTER_CRITICAL
+    // 临界区里调用会触发 lock_acquire_generic -> abort(). 这里改成在
+    // 退出临界区之后再打印, 同时 this_frame 已被摘出 (current_frame=NULL),
+    // 之后没有其它路径会改写它的字段, 访问安全.
+    if (this_frame && !frame_complete) {
+#if UVC_ISOC_DIAG_ENABLED
+        s_diag.incomplete_mjpeg++;
+        if (suspect_frame) {
+            s_diag.suspect_dropped_frames++;
+        }
+#endif
+        uint32_t log_count = s_invalid_mjpeg_log_count++;
+        if (log_count < 8) {
+            ESP_LOGW(TAG, "drop incomplete MJPEG frame #%u: len=%u first=%02x%02x last=%02x%02x",
+                     (unsigned)(log_count + 1), (unsigned)this_frame->data_len,
+                     this_frame->data_len > 0 ? this_frame->data[0] : 0,
+                     this_frame->data_len > 1 ? this_frame->data[1] : 0,
+                     this_frame->data_len > 1 ? this_frame->data[this_frame->data_len - 2] : 0,
+                     this_frame->data_len > 0 ? this_frame->data[this_frame->data_len - 1] : 0);
+        }
+        isoc_diag_log_frame_sample("incomplete", this_frame, frame_complete);
+    } else if (this_frame && skipped_frame) {
+#if UVC_ISOC_DIAG_ENABLED
+        s_diag.skipped_frames++;
+        if (suspect_frame) {
+            s_diag.suspect_dropped_frames++;
+        }
+        if (frame_complete && is_mjpeg_format(this_frame->vs_format.format)) {
+            s_diag.skipped_complete_mjpeg++;
+        }
+#endif
+        isoc_diag_log_frame_sample(frame_complete ? "skipped-complete" : "skipped", this_frame, frame_complete);
+    }
+
+    if (invoke_fb_callback) {
+#if UVC_ISOC_DIAG_ENABLED
+        s_diag.delivered_frames++;
+        if (suspect_frame) {
+            s_diag.suspect_delivered_frames++;
+        }
+#endif
+        return_frame = uvc_stream->constant.frame_cb(this_frame, uvc_stream->constant.cb_arg);
+    }
+    if (this_frame && return_frame) {
+        // The user has processed the frame in his callback, return it back to empty queue
+        uvc_host_frame_return(uvc_stream, this_frame);
+    }
+}
+
 /**
  * @brief Callback function for handling Isochronous USB transfers from a UVC camera.
  *
@@ -397,6 +473,13 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
             goto next_isoc_packet;
         }
 
+        // Finish the old frame before applying the new frame's error flags.
+        // Cameras without EOF delimit frames only by toggling FID.
+        if (start_of_frame) {
+            isoc_complete_frame(uvc_stream);
+        }
+
+#ifdef CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR
         // Check for error flag
         if (payload_header->bmHeaderInfo.error) {
             const bool hard_frame_error = !mjpeg_stream;
@@ -415,6 +498,7 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
                 uvc_stream->single_thread.mjpeg_suspect_current_frame = true;
             }
         }
+#endif // CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR
 
         if (start_of_frame) {
 #if UVC_ISOC_DIAG_ENABLED
@@ -422,8 +506,13 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
 #endif
             // We detected start of new frame. Update Frame ID and start fetching this frame
             uvc_stream->single_thread.current_frame_id   = payload_header->bmHeaderInfo.frame_id;
+#ifdef CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR
             uvc_stream->single_thread.skip_current_frame = !mjpeg_stream && payload_header->bmHeaderInfo.error;
             uvc_stream->single_thread.mjpeg_suspect_current_frame = mjpeg_stream && payload_header->bmHeaderInfo.error;
+#else
+            uvc_stream->single_thread.skip_current_frame = false;
+            uvc_stream->single_thread.mjpeg_suspect_current_frame = false;
+#endif
 
             // Check mjpeg frame start
             if (mjpeg_stream) {
@@ -485,10 +574,9 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
                     goto next_isoc_packet;
                 }
             } else {
-                // We received SoF but current_frame is not NULL: We missed EoF - reset the frame buffer
-                ESP_EARLY_LOGW(TAG, "missed EoF");
-                uvc_frame_reset(uvc_stream->dynamic.current_frame);
+                // Streaming was stopped in the meantime: no buffer to write this payload into
                 UVC_EXIT_CRITICAL();
+                uvc_stream->single_thread.skip_current_frame = true;
             }
         }
 
@@ -521,76 +609,7 @@ void isoc_transfer_callback(usb_transfer_t *transfer)
 #if UVC_ISOC_DIAG_ENABLED
             s_diag.eof++;
 #endif
-            bool return_frame = true; // In case streaming is stopped ATM, we must return the frame
-
-            // Check if the user did not stop the stream in the meantime
-            UVC_ENTER_CRITICAL();
-            uvc_host_frame_t *this_frame = uvc_stream->dynamic.current_frame;
-            uvc_stream->dynamic.current_frame = NULL; // Stop writing more data to this frame
-            const bool frame_complete = mjpeg_frame_trim(this_frame);
-            const bool skipped_frame = uvc_stream->single_thread.skip_current_frame;
-#if UVC_ISOC_DIAG_ENABLED
-            const bool suspect_frame = uvc_stream->single_thread.mjpeg_suspect_current_frame;
-#endif
-#if UVC_ISOC_DIAG_ENABLED
-            if (this_frame && this_frame->data_len > s_diag.max_frame_len) {
-                s_diag.max_frame_len = (uint32_t)this_frame->data_len;
-            }
-#endif
-
-            // Determine if we should invoke the frame callback:
-            // Only invoke the callback if streaming is active, a frame callback exists,
-            // and we have a valid frame to pass to the user.
-            const bool invoke_fb_callback = (uvc_stream->dynamic.streaming && uvc_stream->constant.frame_cb && this_frame && !skipped_frame && frame_complete);
-            UVC_EXIT_CRITICAL();
-
-            // 注意: ESP_LOGW 会走 vfprintf -> newlib 互斥锁, 在 portENTER_CRITICAL
-            // 临界区里调用会触发 lock_acquire_generic -> abort(). 这里改成在
-            // 退出临界区之后再打印, 同时 this_frame 已被摘出 (current_frame=NULL),
-            // 之后没有其它路径会改写它的字段, 访问安全.
-            if (this_frame && !frame_complete) {
-#if UVC_ISOC_DIAG_ENABLED
-                s_diag.incomplete_mjpeg++;
-                if (suspect_frame) {
-                    s_diag.suspect_dropped_frames++;
-                }
-#endif
-                uint32_t log_count = s_invalid_mjpeg_log_count++;
-                if (log_count < 8) {
-                    ESP_LOGW(TAG, "drop incomplete MJPEG frame #%u: len=%u first=%02x%02x last=%02x%02x",
-                             (unsigned)(log_count + 1), (unsigned)this_frame->data_len,
-                             this_frame->data_len > 0 ? this_frame->data[0] : 0,
-                             this_frame->data_len > 1 ? this_frame->data[1] : 0,
-                             this_frame->data_len > 1 ? this_frame->data[this_frame->data_len - 2] : 0,
-                             this_frame->data_len > 0 ? this_frame->data[this_frame->data_len - 1] : 0);
-                }
-                isoc_diag_log_frame_sample("incomplete", this_frame, frame_complete);
-            } else if (this_frame && skipped_frame) {
-#if UVC_ISOC_DIAG_ENABLED
-                s_diag.skipped_frames++;
-                if (suspect_frame) {
-                    s_diag.suspect_dropped_frames++;
-                }
-                if (frame_complete && is_mjpeg_format(this_frame->vs_format.format)) {
-                    s_diag.skipped_complete_mjpeg++;
-                }
-#endif
-                isoc_diag_log_frame_sample(frame_complete ? "skipped-complete" : "skipped", this_frame, frame_complete);
-            }
-
-            if (invoke_fb_callback) {
-#if UVC_ISOC_DIAG_ENABLED
-                s_diag.delivered_frames++;
-                if (suspect_frame) {
-                    s_diag.suspect_delivered_frames++;
-                }
-#endif
-                return_frame = uvc_stream->constant.frame_cb(this_frame, uvc_stream->constant.cb_arg);
-            }
-            if (this_frame && return_frame) {
-                // The user has processed the frame in his callback, return it back to empty queue
-                uvc_host_frame_return(uvc_stream, this_frame);
-            }
+            isoc_complete_frame(uvc_stream);
         }
 next_isoc_packet:
         payload += isoc_desc->num_bytes;

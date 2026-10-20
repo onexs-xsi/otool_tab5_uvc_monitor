@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-09-16
+
+### Added
+
+- Retained project-private formats, control-list APIs, ISOC MJPEG validation and diagnostics on the 2.6.0 baseline. FID-only frame boundaries use the same SOI/EOI validation as explicit EOF.
+- Added a generic control API for VideoControl units and terminals: `uvc_host_stream_find_extension_unit()`, `uvc_host_stream_find_terminal()`, `uvc_host_stream_unit_supports_control()` and `uvc_host_stream_unit_ctrl()`. An application can now drive Camera Terminal, Processing Unit and vendor Extension Unit controls without the device handle and VideoControl interface number, which are private to the driver. Extension Unit payloads are vendor-defined, so the driver cannot interpret them for the caller - it supplies the addressing and the capability check.
+- Added `uvc_host_stream_send_custom_request()` for vendor-specific class requests, and `uvc_host_stream_vs_ctrl()` as an escape hatch for VideoStreaming selectors this driver does not implement.
+- Added `uvc_host_stream_request_key_frame()`, the VideoStreaming Generate Key Frame control. It returns `ESP_ERR_NOT_SUPPORTED` without touching the bus when the camera's descriptor does not claim the control.
+
+### Changed
+
+- `uvc_host_usb_ctrl()` now returns `ESP_ERR_NOT_SUPPORTED` when the device STALLs a control request, rather than the `ESP_ERR_INVALID_RESPONSE` it also returns for a failed transfer.
+
+### Fixed
+
+- Fixed the control transfer size check ignoring the setup packet, which shares the 64-byte EP0 buffer with the payload.
+- Fixed a single EP0 transaction error breaking every later control transfer. Control transfers are now retried a few times with a yield in between. A STALL is deliberately not retried.
+- Retained the local in-flight EP0 timeout/close protection while adding upstream retry and STALL handling. Timed-out transfers are not resubmitted before completion.
+
+## [2.5.2] - 2026-09-01
+
+### Added
+
+- Added `CONFIG_UVC_CHECK_PAYLOAD_HEADER_ERR` option to control whether UVC payload header ERR packets discard the current frame.
+
+### Fixed
+
+- Fixed ISOC handling so empty packets with invalid UVC payload headers do not discard the current frame.
+- Fixed basic UVC stream example to support MJPEG frame buffer size estimation
+- Fixed `uvc_host_stream_close()` aborting the whole system (`ESP_ERROR_CHECK`) when the device is stalled or disconnected; interface release failure is now logged and cleanup continues (https://github.com/espressif/esp-usb/issues/529)
+- Fixed isochronous frame reconstruction for cameras that never set the EOF flag in the payload header: the frame-ID toggle is now treated as the frame boundary and the frame is delivered, instead of being discarded with a `missed EoF` warning. Such a camera previously delivered no frames at all.
+- NULL-check VC header parse results and clamp frame-interval reads to descriptor `bLength` (BBP 573)
+
 ## [2.5.1] - 2026-05-25
 
 ### Added

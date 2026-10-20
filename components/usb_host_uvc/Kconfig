@@ -35,4 +35,10 @@ menu "USB HOST UVC"
         help
             Maximum number of anomaly samples to print per boot when
             UVC_ISOC_DIAG is enabled.
+
+    config UVC_CHECK_PAYLOAD_HEADER_ERR
+        bool "Check ERR bit in payload header"
+        default y
+        help
+            "If ERR is set in the header, this is an error packet, and the frame will be discarded"
 endmenu

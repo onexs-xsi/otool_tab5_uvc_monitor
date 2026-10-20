@@ -66,20 +66,39 @@
 
 ---
 
+## 编译（ESP-IDF 6.1）
+
+目标为 `esp32p4`，已使用 ESP-IDF `v6.1` 和 GCC `15.2.0` 编译验证。先初始化已锁定的子模块，再在 ESP-IDF 6.1 终端执行：
+
+```powershell
+git submodule update --init --recursive
+idf.py build
+```
+
+Windows 也可以在已安装 Python 环境的 PowerShell 中先执行 `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`。默认配置位于 `sdkconfig.defaults`，`sdkconfig` 由构建生成；PPA 旋转由 ESP32-P4 端口自动支持，并通过显示初始化配置启用。
+
+`dependencies.lock` 锁定本次构建使用的托管组件：LVGL `9.6.0~1`、USB Host `1.6.0`、i2c_bus `1.5.2`、esp_codec_dev `1.5.11`、esp_lcd_touch `1.2.1` 和 cmake_utilities `0.5.3`。需要重新解析各 manifest 允许的最新版本时，执行 `idf.py update-dependencies`。
+
+输出固件为 `build/c145_tab5_as_camera_display_demo_idf600.bin`。LVGL 标志接口、触摸读取和 LCD 帧完成回调已迁移至当前 API，ESP-IDF 6.1 的 `idf.py clean build` 全量编译通过，编译日志为 0 告警、0 错误。
+
+执行 `python tools/test_mode_listing_policy.py` 可验证模式列表和确认提示策略，当前 9 项检查全部通过；显示裁剪、缩放和生成文案的原生检查也已通过 ASan/UBSan 验证。以上验证不包含实机烧录或摄像头、音频测试。
+
+---
+
 ## 本地 USB 组件说明
 
 本项目继续使用 `components/usb_host_uac` 和 `components/usb_host_uvc` 作为本地组件，不直接依赖 IDF Component Manager 里的官方 UAC/UVC 组件。原因不是两个组件都做了同等规模的功能分叉，而是 UVC 已经包含本项目运行所需的本地扩展；UAC 保持本地化可以让 USB 音视频组件的版本、补丁和构建布局一起固定。
 
-`components/usb_host_uac` 当前已合并到 Espressif `esp-usb` master 提交 `606635bce0799165ad35fcd712fe6e891b385ed7`，组件版本标记为 `1.4.0`。它与官方 1.4.0 基本保持功能一致；本地保留的主要是项目内组件布局和 manifest 适配，避免直接引用 `esp-usb` monorepo 里的 `override_path` 布局，也便于和本地 UVC 一起锁定。上游 1.4.0 中的 UAC 修订已经合入，包括放宽 driver task core id 校验，以及用 64-bit 中间值计算音频 packet size。
+`components/usb_host_uac` 已同步官方发布版 `1.5.0`（Espressif `esp-usb` 提交 `6d24137e14a4f6c8138662a7a074be16a899c2c6`），包含非整数采样率 TX 包长的分数累加修复，以及按 `bSubframeSize` 计算 USB 音频包长的修复。本地保留项目内组件布局和 manifest 适配，避免直接引用 `esp-usb` monorepo 的 `override_path`。`uac_host_dev_alt_param_t` 新增 `subframe_size` 字段，应用应按字段名访问。
 
-`components/usb_host_uvc` 仍以官方 `usb_host_uvc 2.5.0` 为基础，但它不是官方组件的纯拷贝，必须单独保留，差异包括：
+`components/usb_host_uvc` 已合并官方发布版 `2.6.0`（提交 `516d55da0b051843f50eb36cbc7b9c9dda453a53`），包含通用单元/终端控制 API、EP0 重试与 STALL 区分、描述符长度检查，以及无 EOF 摄像头的 FID 边界处理。它仍保留项目扩展：
 
 - **额外格式枚举**：官方 UVC 只公开 `MJPEG`、`YUY2`、`H264`、`H265` 等格式；本地组件增加 `MJPEG_SW`、`UYVY`、`GRAY8`、`RGBP`，并在 descriptor parser 中识别 `UYVY`、`Y800/GREY`、`RGBP` 以及带软件编码标记的 MJPEG。
 - **MJPEG HW/SW 区分**：本地组件会根据 MJPEG format descriptor 的 `bmFlags` 区分 `MJPEG(HW)` 和 `MJPEG(SW)`。这会影响模式列表、质量控制项和调试日志；官方组件会把它们都当成普通 `MJPEG`。
 - **VideoControl 控件枚举 API**：本地组件增加 `uvc_host_ctrl_info_t` 和 `uvc_host_get_ctrl_list()`，从 VC descriptor 的 PU/XU `bmControls` 中解析可用控件。选择界面可以在 stream open 前显示 Advanced 控件入口；官方组件没有这个 public API。
 - **BULK URB sizing 行为**：部分摄像头会把 `dwMaxPayloadTransferSize` 上报成接近整帧大小。官方路径可能导致 BULK URB 申请过大；本地逻辑在 BULK endpoint 下优先使用调用方配置的 `urb_size`，避免不必要的大块内存占用。
 - **ISOC MJPEG 完整帧过滤**：本地 `uvc_isoc.c` 会在回调前检查并裁剪 MJPEG 到 EOI，丢弃缺 SOI/EOI 的不完整帧，并控制异常日志频率，减少上层 JPEG 解码收到坏帧的概率。
-- **上游修复回合**：本地 UVC 已合入同一上游提交中的 payload header EOH 校验、`urb_size == 0` 默认 4x MPS 等修订，同时保留上述项目扩展。
+- **超时与帧边界保护**：EP0 超时后保留在途传输保护，避免重用或释放尚未完成的 URB；FID 边界和 EOF 共用 MJPEG 完整性检查，缺少 EOI 的帧仍会丢弃。
 
 ---
 
@@ -89,7 +108,7 @@
 - 高级控制只适配本人自制的一些 UVC 固件，普通 UVC 摄像头不支持；兼容固件还必须声明对应 descriptor，并能正确响应 UVC `GET_*` / `SET_CUR` 事务。
 - `MJPEG(HW) Quality` 不属于 live-safe 控件，会延迟到下一次启动流时再应用。
 - 流播放已经启动时，`REINIT` 不会生效。
-- 当前仓库提交的 `sdkconfig` 已针对这套 TAB5 / ESP32-P4 Demo 进行调优，但最终固件产物名仍沿用 CMake 项目名 `c145_tab5_as_camera_display_demo_idf600`。
+- 当前仓库提交的 `sdkconfig.defaults` 已针对这套 TAB5 / ESP32-P4 Demo 进行调优，最终固件产物名仍沿用 CMake 项目名 `c145_tab5_as_camera_display_demo_idf600`。
 
 ---
 
@@ -119,7 +138,7 @@ components/
   otool_tab5_component/   # TAB5 硬件初始化，面板、触摸、电源
   otool_lvgl_idf_port/    # LVGL 的 IDF 适配层，显示刷新、触摸输入
   usb_host_uvc/           # USB UVC Host 驱动，本项目保留本地扩展
-  usb_host_uac/           # USB UAC Host 驱动，已合并上游 1.4.0
+  usb_host_uac/           # USB UAC Host 驱动，已合并上游 1.5.0
 ```
 
 ---

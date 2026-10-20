@@ -44,7 +44,9 @@ def test_not_recommended_modes_are_selected_then_confirmed_on_start():
     assert "not_recommended_confirm_overlay" in app_internal
     assert "Open video stream?" in ui_selection
     assert "Performance may be poor" in ui_selection
-    assert "compressed to fit the display" in ui_selection
+    assert "ui_format_display_viewport_note(a, m, display_note, sizeof(display_note));" in ui_selection
+    assert "display_viewport_format_summary(&viewport, out, out_size);" in ui_selection
+    assert "m->fps, display_note);" in ui_selection
     assert "confirm_not_recommended_open_cb" in ui_selection
     assert "show_not_recommended_confirm_dialog(a, a->selected_mode)" in ui_selection
     assert "Press START to confirm opening this not recommended mode" in ui_selection
