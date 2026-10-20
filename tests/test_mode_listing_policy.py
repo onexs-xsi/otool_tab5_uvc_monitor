@@ -1,3 +1,5 @@
+"""Run mode listing and confirmation checks with python tests/test_mode_listing_policy.py."""
+
 from pathlib import Path
 
 

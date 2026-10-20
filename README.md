@@ -19,7 +19,7 @@
 - **UVC 视频流**：可从已连接摄像头枚举 MJPEG(HW)、MJPEG(SW)、YUY2、UYVY、GRAY8 和 RGBP 模式。
 - **ESP32-P4 硬件加速**：使用硬件 JPEG 解码与 PPA 缩放/旋转，在 TAB5 屏幕上以 1280x720 横屏方式显示。
 - **LVGL 9.x 选择界面**：包含模式列表、UVC 信息摘要、版本号、Audio 开关、Advanced 开关与操作按钮。
-- **Capability CHECK**：在真正开始播放前，逐个尝试所有已枚举模式，并对每个模式采样 5 次帧数据。
+- **Capability CHECK**：在真正开始播放前，逐个尝试推荐范围内且格式受支持的模式；成功打开后尝试取帧 5 次，其余模式标记为 `SKIP`。
 - **高级相机控制**：只适配本人自制的一些 UVC 固件，普通 UVC 摄像头不支持；当兼容固件声明并支持对应控件时，可调节 Contrast、Saturation、HMirror、VFlip、Effect、AE Level、White Balance 与 MJPEG 质量。
 - **USB REINIT**：可在选择界面手动重置 USB 5V，对卡住的摄像头进行恢复，而无需重启整板。
 - **可选 UAC 音频**：支持麦克风 / 扬声器检测，以及流播放阶段的音频叠加显示。
@@ -45,9 +45,9 @@
 
 1. 给 TAB5 上电，并等待 USB 摄像头完成枚举。
 2. 在选择列表中查看检测到的格式、分辨率与 FPS。
-3. 如有需要，可先按 `CHECK`，逐个打开已枚举模式并确认是否有帧到达。
+3. 如有需要，可先按 `CHECK`，检查推荐范围内且格式受支持的模式是否有帧到达；不推荐或不支持的模式会跳过。
 4. 选择一个可启动的模式；如有需要，可启用 `Audio`，并通过 `CONFIGURATION` 预设高级控制参数。
-5. 按下 `START`，停止选择界面并进入视频流播放管线。
+5. 按下 `START`。标记为 `not recommended` 的模式会先显示裁剪、缩放方案及性能提示，按 `OPEN` 确认后尝试启动；等待首帧期间显示启动状态。
 6. 如果启用了 `Advanced`，并且摄像头暴露了兼容控件，那么播放阶段会常驻右侧高级控制面板。
 7. 如果摄像头在开始播放前卡住，可按 `REINIT` 对 USB 电源进行循环重置并重新枚举设备。
 
@@ -57,8 +57,8 @@
 
 | UI 元素 | 行为 |
 | --- | --- |
-| `START` | 启动当前选中的模式并进入流播放阶段 |
-| `CHECK` | 打开检测弹窗，对每个已声明模式采样 5 次帧数据 |
+| `START` | 启动当前选中的模式；`not recommended` 模式需在弹窗中按 `OPEN` 确认 |
+| `CHECK` | 检查推荐范围内且格式受支持的模式，成功打开后尝试取帧 5 次；其他模式标记为 `SKIP` |
 | `REINIT` | 在非流播放状态下循环 USB 5V，适合恢复无响应摄像头 |
 | `Audio` | 当检测到兼容音频接口时，启用 UAC 麦克风 / 扬声器功能 |
 | `Advanced` | 仅用于本人自制的部分 UVC 固件；普通 UVC 摄像头不支持。兼容固件支持时，可让高级控制侧栏在视频播放阶段常驻显示 |
@@ -75,13 +75,13 @@ git submodule update --init --recursive
 idf.py build
 ```
 
-Windows 也可以在已安装 Python 环境的 PowerShell 中先执行 `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`。默认配置位于 `sdkconfig.defaults`，`sdkconfig` 由构建生成；PPA 旋转由 ESP32-P4 端口自动支持，并通过显示初始化配置启用。
+Windows 可使用 ESP-IDF 6.1 的 PowerShell 终端；手动加载环境时，请按本机安装路径执行 `export.ps1`，例如 `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`。默认配置位于 `sdkconfig.defaults`，`sdkconfig` 由构建生成；PPA 旋转由 ESP32-P4 端口自动支持，并通过显示初始化配置启用。
 
 `dependencies.lock` 锁定本次构建使用的托管组件：LVGL `9.6.0~1`、USB Host `1.6.0`、i2c_bus `1.5.2`、esp_codec_dev `1.5.11`、esp_lcd_touch `1.2.1` 和 cmake_utilities `0.5.3`。需要重新解析各 manifest 允许的最新版本时，执行 `idf.py update-dependencies`。
 
 输出固件为 `build/c145_tab5_as_camera_display_demo_idf600.bin`。LVGL 标志接口、触摸读取和 LCD 帧完成回调已迁移至当前 API，ESP-IDF 6.1 的 `idf.py clean build` 全量编译通过，编译日志为 0 告警、0 错误。
 
-执行 `python tools/test_mode_listing_policy.py` 可验证模式列表和确认提示策略，当前 9 项检查全部通过；显示裁剪、缩放和生成文案的原生检查也已通过 ASan/UBSan 验证。以上验证不包含实机烧录或摄像头、音频测试。
+执行 `python tests/test_mode_listing_policy.py` 可验证模式列表和确认提示策略，当前 9 项检查全部通过；显示裁剪、缩放和生成文案的原生检查也已通过 ASan/UBSan 验证。以上验证不包含实机烧录或摄像头、音频测试。
 
 ---
 
@@ -104,7 +104,7 @@ Windows 也可以在已安装 Python 环境的 PowerShell 中先执行 `. C:\Esp
 
 ## 注意事项与限制
 
-- 高于 **1280x720** 的模式仍会显示在列表中供查看，但会被标记为 **not recommended**，无法直接启动；超过 **1920x1080** 硬件处理上限的模式也会显示，并标记为 **hardware unsupported**。
+- 高于 **1280x720**、但仍在 **1920x1080** 硬件处理范围内的模式标记为 **not recommended**，可以选中并在 `START` 弹窗中按 `OPEN` 确认后尝试启动，实际帧率和稳定性取决于摄像头与系统负载。超过硬件处理上限的模式标记为 **hardware unsupported**，仅供查看，无法启动。
 - 高级控制只适配本人自制的一些 UVC 固件，普通 UVC 摄像头不支持；兼容固件还必须声明对应 descriptor，并能正确响应 UVC `GET_*` / `SET_CUR` 事务。
 - `MJPEG(HW) Quality` 不属于 live-safe 控件，会延迟到下一次启动流时再应用。
 - 流播放已经启动时，`REINIT` 不会生效。
@@ -120,6 +120,8 @@ main/
   app_runtime.cpp       # 板卡识别、TAB5/LVGL 初始化与首屏 UI
   app_internal.h        # 共享类型、常量和 extern 声明
   display_pipeline.cpp  # JPEG 解码、PPA 缩放/旋转、面板刷新
+  display_viewport.cpp  # 裁剪、缩放、居中与显示说明计算
+  display_viewport.h    # 显示视口类型和接口
   ui/
     ui_selection.cpp      # LVGL 选择界面与 CHECK / REINIT / CONFIGURATION 交互
     factory_overlay.cpp   # 产线等待界面与视频阶段版本/FPS 信息叠加
@@ -139,19 +141,29 @@ components/
   otool_lvgl_idf_port/    # LVGL 的 IDF 适配层，显示刷新、触摸输入
   usb_host_uvc/           # USB UVC Host 驱动，本项目保留本地扩展
   usb_host_uac/           # USB UAC Host 驱动，已合并上游 1.5.0
+
+tests/
+  test_mode_listing_policy.py  # 模式列表与确认提示策略检查
+  display_viewport_test.cpp    # 显示视口与生成文案的原生回归检查
+
+docs/
+  images/                    # README 界面截图
 ```
+
+组件的使用说明、更新记录、示例与测试位于各自的 `components/` 子目录。`build/`、`managed_components/` 和 `sdkconfig` 由构建工具生成，不纳入版本管理。
 
 ---
 
 ## 配置说明
 
-| 配置项分组 | 作用 |
+| 配置来源 | 作用 |
 | --- | --- |
-| `CONFIG_UVC_*` | UVC 帧缓冲、URB 大小以及相关任务优先级 |
-| `CONFIG_UAC_*` | 音频缓冲深度、采样率行为与播放 / 录音延迟 |
-| `CONFIG_LVGL_*` | LVGL 任务栈大小、tick 定时与 UI 响应性 |
+| `CONFIG_UVC_*` | UVC 描述符日志、帧间隔数组容量、负载头检查与 ISOC 诊断 |
+| `CONFIG_UAC_*` | UAC 设备 / 采样率列表容量、ISOC URB 数量及每个 URB 的包数 |
+| `CONFIG_LV_*` | LVGL 字体、绘制缓冲、日志与标准库适配 |
+| `main/app_runtime.cpp` 与 LVGL 端口的 `otool_lvgl_port_cfg_t` | LVGL 任务栈、优先级与 tick 定时 |
 
-像 **1280x720 启动上限**、高级控件默认值等选择与叠加限制，主要定义在 `main/app_internal.h` 和 `main/uvc/usb_task.cpp` 中。
+应用层帧缓冲数量、URB 大小、音频缓冲，以及 **1280x720 推荐范围**和 **1920x1080 硬件限制**定义在 `main/app_internal.h` 中；高级控件默认值主要位于 `main/uvc/usb_task.cpp`。通过 `idf.py menuconfig` 修改 Kconfig 选项，修改默认配置时同步维护 `sdkconfig.defaults`。
 
 ---
 

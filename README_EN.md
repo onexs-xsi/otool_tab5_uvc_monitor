@@ -19,7 +19,7 @@ The selection screen includes UVC information, Audio, Advanced, `CONFIGURATION`,
 - **UVC video streaming**: Enumerates MJPEG(HW), MJPEG(SW), YUY2, UYVY, GRAY8, and RGBP modes from the connected camera.
 - **ESP32-P4 hardware acceleration**: Uses the hardware JPEG decoder and PPA scale/rotate path to render a 1280x720 landscape view on the TAB5 display.
 - **LVGL 9.x selection UI**: Mode list, UVC summary, build version, Audio switch, Advanced switch, and action buttons.
-- **Capability CHECK**: Opens every advertised mode before playback and samples 5 frames from each mode.
+- **Capability CHECK**: Tries modes within the recommended resolution range and with supported formats before playback. Each successfully opened mode gets 5 frame-receive attempts; other modes are marked `SKIP`.
 - **Advanced camera controls**: Intended only for some of my custom UVC firmware builds, not standard UVC cameras. When compatible firmware advertises and supports matching controls, the UI exposes Contrast, Saturation, HMirror, VFlip, Effect, AE Level, White Balance, and MJPEG quality.
 - **USB REINIT**: Cycles USB 5V from the selection screen to recover a stuck camera without rebooting the board.
 - **Optional UAC audio**: Detects microphone and speaker interfaces and can draw an audio overlay during streaming.
@@ -45,9 +45,9 @@ The selection screen includes UVC information, Audio, Advanced, `CONFIGURATION`,
 
 1. Power on TAB5 and wait for USB camera enumeration.
 2. Review detected formats, resolutions, and FPS values in the mode list.
-3. Optionally press `CHECK` to open every enumerated mode and confirm that frames arrive.
+3. Optionally press `CHECK` to confirm that frames arrive for modes within the recommended range and with supported formats; modes marked as not recommended or unsupported are skipped.
 4. Select a startable mode; optionally enable `Audio` and preconfigure advanced camera controls through `CONFIGURATION`.
-5. Press `START` to stop the selection UI and enter the video streaming pipeline.
+5. Press `START`. For a mode marked `not recommended`, review the cropping/scaling plan and performance warning, then press `OPEN` to attempt streaming. A startup overlay stays visible while waiting for the first frame.
 6. If `Advanced` is enabled and the camera exposes compatible controls, the right-side advanced control panel stays visible during playback.
 7. If the camera is stuck before playback starts, press `REINIT` to cycle USB power and enumerate the device again.
 
@@ -57,8 +57,8 @@ The selection screen includes UVC information, Audio, Advanced, `CONFIGURATION`,
 
 | UI Element | Behavior |
 | --- | --- |
-| `START` | Starts the selected mode and enters streaming |
-| `CHECK` | Opens a check modal and samples 5 frames from every advertised mode |
+| `START` | Starts the selected mode; a `not recommended` mode requires confirmation with `OPEN` in the dialog |
+| `CHECK` | Checks modes within the recommended range and with supported formats, making 5 frame-receive attempts after each successful open; other modes are marked `SKIP` |
 | `REINIT` | Cycles USB 5V while not streaming, useful for recovering an unresponsive camera |
 | `Audio` | Enables UAC microphone / speaker features when compatible interfaces are detected |
 | `Advanced` | Only for some of my custom UVC firmware builds; standard UVC cameras are not supported. Keeps the advanced control sidebar visible during playback when compatible firmware supports it |
@@ -75,13 +75,13 @@ git submodule update --init --recursive
 idf.py build
 ```
 
-On Windows, a PowerShell with the installed Python environment can first run `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`. Defaults are in `sdkconfig.defaults`; `sdkconfig` is generated during the build. The ESP32-P4 port supports PPA rotation automatically, enabled through the display initialization configuration.
+On Windows, use the ESP-IDF 6.1 PowerShell terminal. To load the environment manually, run `export.ps1` from your installation path, for example `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`. Defaults are in `sdkconfig.defaults`; `sdkconfig` is generated during the build. The ESP32-P4 port supports PPA rotation automatically, enabled through the display initialization configuration.
 
 `dependencies.lock` pins the managed components used for this build: LVGL `9.6.0~1`, USB Host `1.6.0`, i2c_bus `1.5.2`, esp_codec_dev `1.5.11`, esp_lcd_touch `1.2.1`, and cmake_utilities `0.5.3`. Run `idf.py update-dependencies` to resolve the latest versions allowed by the component manifests again.
 
 The firmware output is `build/c145_tab5_as_camera_display_demo_idf600.bin`. LVGL flag calls, touch reads, and the LCD frame completion callback use the current APIs. A complete ESP-IDF 6.1 rebuild with `idf.py clean build` passed with 0 warnings and 0 errors.
 
-Run `python tools/test_mode_listing_policy.py` to check mode listing and confirmation messages; all 9 checks pass. Native display cropping, scaling, and generated-message checks also passed with ASan/UBSan. This verification does not include flashing or camera/audio hardware tests.
+Run `python tests/test_mode_listing_policy.py` to check mode listing and confirmation messages; all 9 checks pass. Native display cropping, scaling, and generated-message checks also passed with ASan/UBSan. This verification does not include flashing or camera/audio hardware tests.
 
 ---
 
@@ -104,7 +104,7 @@ This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as lo
 
 ## Notes And Limits
 
-- Modes above **1280x720** are still listed for inspection, but are marked **not recommended** and cannot be started directly; modes above the **1920x1080** hardware processing limit are also listed and marked **hardware unsupported**.
+- Modes above **1280x720** but within the **1920x1080** hardware processing limit are marked **not recommended**. Select one, press `START`, and confirm with `OPEN` to attempt streaming; frame rate and stability depend on the camera and system load. Modes above the hardware limit are marked **hardware unsupported** and cannot be started.
 - Advanced controls are intended only for some of my custom UVC firmware builds, not standard UVC cameras; compatible firmware must also advertise the descriptor and respond correctly to UVC `GET_*` / `SET_CUR` transactions.
 - `MJPEG(HW) Quality` is not live-safe and is applied on the next stream start.
 - `REINIT` is ignored while streaming is already active.
@@ -120,6 +120,8 @@ main/
   app_runtime.cpp       # board detection, TAB5/LVGL init, and first-screen setup
   app_internal.h        # shared types, constants, and extern declarations
   display_pipeline.cpp  # JPEG decode, PPA scale/rotate, panel flush
+  display_viewport.cpp  # cropping, scaling, centering, and display summaries
+  display_viewport.h    # display viewport types and interfaces
   ui/
     ui_selection.cpp      # LVGL selection UI and CHECK / REINIT / CONFIGURATION interactions
     factory_overlay.cpp   # factory waiting screen plus version/FPS overlay during playback
@@ -139,19 +141,29 @@ components/
   otool_lvgl_idf_port/    # LVGL IDF port for display flush and touch input
   usb_host_uvc/           # USB UVC Host driver with local project extensions
   usb_host_uac/           # USB UAC Host driver merged to upstream 1.5.0
+
+tests/
+  test_mode_listing_policy.py  # mode listing and confirmation policy checks
+  display_viewport_test.cpp    # native viewport and generated-message checks
+
+docs/
+  images/                    # README screenshots
 ```
+
+Component documentation, changelogs, examples, and tests live under their respective `components/` directories. `build/`, `managed_components/`, and `sdkconfig` are generated by the build tools and are excluded from version control.
 
 ---
 
 ## Configuration
 
-| Config Group | Purpose |
+| Configuration Source | Purpose |
 | --- | --- |
-| `CONFIG_UVC_*` | UVC frame buffers, URB size, and related task priorities |
-| `CONFIG_UAC_*` | Audio buffer depth, sample-rate behavior, and playback / recording latency |
-| `CONFIG_LVGL_*` | LVGL task stack, tick timing, and UI responsiveness |
+| `CONFIG_UVC_*` | UVC descriptor logging, frame-interval array capacity, payload-header checks, and ISOC diagnostics |
+| `CONFIG_UAC_*` | UAC device/sample-rate list capacity, ISOC URB count, and packets per URB |
+| `CONFIG_LV_*` | LVGL fonts, draw buffers, logging, and standard-library integration |
+| `main/app_runtime.cpp` and the LVGL port's `otool_lvgl_port_cfg_t` | LVGL task stack, priority, and tick timing |
 
-Selection and overlay limits such as the **1280x720 start cap** and advanced-control defaults are mainly defined in `main/app_internal.h` and `main/uvc/usb_task.cpp`.
+Application frame-buffer counts, URB size, audio buffers, the **1280x720 recommended range**, and the **1920x1080 hardware limit** are defined in `main/app_internal.h`. Advanced-control defaults mainly live in `main/uvc/usb_task.cpp`. Use `idf.py menuconfig` to change Kconfig options, and keep `sdkconfig.defaults` in sync when changing the defaults.
 
 ---
 
