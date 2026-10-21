@@ -1026,8 +1026,10 @@ unblock:
  * @param[in] uvc_stream Stream handle
  * @param[in] vs_format  Format to save
  * @param[in] dwMaxVideoFrameSize Maximum video frame size of this format
+ * @param[in] dwMaxPayloadTransferSize Maximum UVC payload size, including its header
  */
-static void uvc_format_save(uvc_stream_t *uvc_stream, const uvc_host_stream_format_t *vs_format, uint32_t dwMaxVideoFrameSize)
+static void uvc_format_save(uvc_stream_t *uvc_stream, const uvc_host_stream_format_t *vs_format,
+                            uint32_t dwMaxVideoFrameSize, uint32_t dwMaxPayloadTransferSize)
 {
     assert(uvc_stream && vs_format);
 
@@ -1035,6 +1037,7 @@ static void uvc_format_save(uvc_stream_t *uvc_stream, const uvc_host_stream_form
     // Save to video format to this stream
     memcpy((uvc_host_stream_format_t *)&uvc_stream->dynamic.vs_format, vs_format, sizeof(uvc_host_stream_format_t));
     uvc_stream->dynamic.dwMaxVideoFrameSize = dwMaxVideoFrameSize;
+    uvc_stream->dynamic.dwMaxPayloadTransferSize = dwMaxPayloadTransferSize;
     UVC_EXIT_CRITICAL();
 
     // Save to all frame buffers
@@ -1105,8 +1108,8 @@ esp_err_t uvc_host_stream_open(const uvc_host_stream_config_t *stream_config, in
         uvc_reclaim_interface_for_payload(uvc_stream, vs_result.dwMaxPayloadTransferSize, &ep_desc),
         err, TAG, "Failed to select streaming interface for negotiated payload");
 
-    // For ISOC endpoints the URB must cover at least one full UVC payload; for BULK the
-    // USB host splits data automatically across transfers, so dwMaxPayloadTransferSize (which
+    // For ISOC endpoints the URB must cover at least one full UVC payload; for BULK
+    // the callback reassembles payloads across URBs, so dwMaxPayloadTransferSize (which
     // some cameras report as the full frame size, e.g. 3.6 MB) must NOT be used as a floor.
     const bool ep_is_bulk = (USB_EP_DESC_GET_XFERTYPE(ep_desc) == USB_BM_ATTRIBUTES_XFER_BULK);
     size_t urb_size;
@@ -1135,7 +1138,7 @@ esp_err_t uvc_host_stream_open(const uvc_host_stream_config_t *stream_config, in
         err, TAG,);
 
     // Save info
-    uvc_format_save(uvc_stream, &real_format, vs_result.dwMaxVideoFrameSize);
+    uvc_format_save(uvc_stream, &real_format, vs_result.dwMaxVideoFrameSize, vs_result.dwMaxPayloadTransferSize);
     uvc_stream->constant.stream_cb = stream_config->event_cb;
     uvc_stream->constant.frame_cb = stream_config->frame_cb;
     uvc_stream->constant.cb_arg = stream_config->user_ctx;
@@ -1289,7 +1292,7 @@ esp_err_t uvc_host_stream_format_select(uvc_host_stream_hdl_t stream_hdl, uvc_ho
     ESP_GOTO_ON_ERROR(
         uvc_host_stream_control_probe(stream_hdl, format, &vs_result),
         bailout, TAG, "Failed to negotiate requested Video Stream format");
-    uvc_format_save(stream_hdl, format, vs_result.dwMaxVideoFrameSize);
+    uvc_format_save(stream_hdl, format, vs_result.dwMaxVideoFrameSize, vs_result.dwMaxPayloadTransferSize);
 
 bailout:
     if (restart_required) {
@@ -1364,7 +1367,9 @@ esp_err_t uvc_host_stream_unpause(uvc_host_stream_hdl_t stream_hdl)
     // Start of Frame is detected when received FrameID != current_frame_id
     // We set current_frame_id to illegal value (FrameID can be 0 or 1) so we catch SoF of the very first frame
     stream_hdl->single_thread.current_frame_id = 2;
-    stream_hdl->single_thread.next_bulk_packet = UVC_STREAM_BULK_PACKET_SOF;
+    stream_hdl->single_thread.next_bulk_packet = UVC_STREAM_BULK_PACKET_HEADER;
+    stream_hdl->single_thread.bulk_payload_bytes = 0;
+    stream_hdl->single_thread.bulk_payload_eof = false;
     stream_hdl->single_thread.skip_current_frame = false;
     stream_hdl->single_thread.mjpeg_suspect_current_frame = false;
     UVC_EXIT_CRITICAL();

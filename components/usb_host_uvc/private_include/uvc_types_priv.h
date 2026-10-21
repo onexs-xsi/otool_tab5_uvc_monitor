@@ -20,12 +20,11 @@
 typedef struct uvc_host_stream_s uvc_stream_t;
 
 /**
- * @brief Enum for simple state machine of Bulk frame data processing
+ * @brief Next part of a UVC Bulk payload, which may span several USB transfers
  */
 typedef enum {
-    UVC_STREAM_BULK_PACKET_SOF = 0,
+    UVC_STREAM_BULK_PACKET_HEADER = 0,
     UVC_STREAM_BULK_PACKET_DATA,
-    UVC_STREAM_BULK_PACKET_EOF,
 } uvc_stream_bulk_packet_type_t;
 
 struct uvc_host_stream_s {
@@ -56,12 +55,15 @@ struct uvc_host_stream_s {
     struct {
         uvc_host_stream_format_t vs_format;   // Format of the video stream
         uint32_t dwMaxVideoFrameSize;         // Maximum frame size of this vs_format
+        uint32_t dwMaxPayloadTransferSize;    // Negotiated payload limit, including the UVC header
         uvc_host_frame_t *current_frame;      // Frame that is being written to
         bool streaming;                       // Flag whether stream is on/off
     } dynamic; // Dynamic members require a critical section
 
     struct {
         uvc_stream_bulk_packet_type_t next_bulk_packet; // Bulk only: next expected packet
+        size_t bulk_payload_bytes;                     // Bulk only: bytes collected in the current payload
+        bool bulk_payload_eof;                         // Bulk only: deliver after this entire payload arrives
         bool skip_current_frame;                        // Flag to skip current frame. An error has occurred in the stream
         bool mjpeg_suspect_current_frame;               // ISOC MJPEG only: saw a recoverable payload warning in current frame
         uint8_t current_frame_id;                       // Frame ID can be only 0 or 1. But we also allow setting it to invalid value = 2.

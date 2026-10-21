@@ -68,20 +68,50 @@
 
 ## 编译（ESP-IDF 6.1）
 
-目标为 `esp32p4`，已使用 ESP-IDF `v6.1` 和 GCC `15.2.0` 编译验证。先初始化已锁定的子模块，再在 ESP-IDF 6.1 终端执行：
+目标为 `esp32p4`，已使用 ESP-IDF `v6.1` 和 GCC `15.2.0` 编译验证。递归克隆项目以取得已锁定的子模块：
 
 ```powershell
-git submodule update --init --recursive
-idf.py build
+git clone --recursive https://github.com/onexs-xsi/otool_tab5_uvc_monitor.git
+cd otool_tab5_uvc_monitor
 ```
 
-Windows 可使用 ESP-IDF 6.1 的 PowerShell 终端；手动加载环境时，请按本机安装路径执行 `export.ps1`，例如 `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`。默认配置位于 `sdkconfig.defaults`，`sdkconfig` 由构建生成；PPA 旋转由 ESP32-P4 端口自动支持，并通过显示初始化配置启用。
+已有工作区执行 `git submodule update --init --recursive` 即可。子模块使用 HTTPS 地址，无需配置 SSH 密钥。
+
+Windows 可使用 ESP-IDF 6.1 的 PowerShell 终端；手动加载环境时，请按本机安装路径执行 `export.ps1`，例如 `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`。按芯片 revision 选择构建配置（可用 `python -m esptool --chip esp32p4 -p COM3 chip-id` 查看）：
+
+- **早期 ESP32-P4**：使用默认的 `sdkconfig.defaults`，执行 `idf.py build`，再执行 `idf.py -p COM3 flash monitor`。
+- **ESP32-P4 v3.1 及以上**：叠加 `sdkconfig.defaults.rev3`。本次 TAB5 v3.2 使用此配置，启用 USB Serial/JTAG 日志，并缩减 bootloader 日志以适配分区前的空间：
+
+```powershell
+idf.py -B build/rev3 -D SDKCONFIG=build/rev3/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.rev3" build
+```
+
+该配置和固件独立生成在 `build/rev3/`，避免沿用旧芯片的 `sdkconfig`。在 TAB5 USB Serial/JTAG 口烧录时，使用本次实测的 watchdog 复位方式，然后连接日志监视器：
+
+```powershell
+cd build/rev3
+python -m esptool --chip esp32p4 -p COM3 -b 460800 --before default-reset --after watchdog-reset write-flash '@flash_args'
+cd ../..
+idf.py -B build/rev3 -p COM3 monitor --no-reset
+```
+
+将 `COM3` 换成实际端口；烧录和监视时应关闭其他占用该串口的程序。PPA 旋转由 ESP32-P4 端口自动支持，并通过显示初始化配置启用。
 
 `dependencies.lock` 锁定本次构建使用的托管组件：LVGL `9.6.0~1`、USB Host `1.6.0`、i2c_bus `1.5.2`、esp_codec_dev `1.5.11`、esp_lcd_touch `1.2.1` 和 cmake_utilities `0.5.3`。需要重新解析各 manifest 允许的最新版本时，执行 `idf.py update-dependencies`。
 
-输出固件为 `build/c145_tab5_as_camera_display_demo_idf600.bin`。LVGL 标志接口、触摸读取和 LCD 帧完成回调已迁移至当前 API，ESP-IDF 6.1 的 `idf.py clean build` 全量编译通过，编译日志为 0 告警、0 错误。
+默认输出固件为 `build/c145_tab5_as_camera_display_demo_idf600.bin`，v3.1+ 配置输出在 `build/rev3/` 下。LVGL 标志接口、触摸读取和 LCD 帧完成回调已迁移至当前 API，ESP-IDF 6.1 全量编译通过，编译日志为 0 告警、0 错误。
 
-执行 `python tests/test_mode_listing_policy.py` 可验证模式列表和确认提示策略，当前 9 项检查全部通过；显示裁剪、缩放和生成文案的原生检查也已通过 ASan/UBSan 验证。以上验证不包含实机烧录或摄像头、音频测试。
+已在 TAB5（ESP32-P4 v3.2）烧录验证 BULK 摄像头：协商模式为 `MJPEG(HW) 1280x720 @30 FPS`，使用 3 个 16 KiB URB。修复 EOF 末包拼接后，画面正常显示，连续两段约 10 秒统计的屏幕帧率为 **11.38 / 11.75 FPS**；该值是实际显示帧率，30 FPS 是摄像头协商值。音频尚未进行本轮实机验证。
+
+执行 `python tests/test_mode_listing_policy.py` 可验证模式列表和确认提示策略，当前 9 项检查全部通过；显示裁剪、缩放和生成文案的原生检查也已通过 ASan/UBSan 验证。
+
+BULK 收帧回归测试使用实际 UVC 驱动、JPEG 样本和 USB / FreeRTOS 桩，在 Linux 或 WSL 中运行（需要 GCC/G++ 和已经解析的托管 USB 组件）：
+
+```sh
+python3 tests/run_uvc_bulk_tests.py --idf-path /path/to/esp-idf
+```
+
+测试覆盖携带数据的 EOF 末包、跨 URB 负载、ZLP、协商负载边界、FID 切换及缓冲恢复，并启用 ASan/UBSan。
 
 ---
 
@@ -96,9 +126,9 @@ Windows 可使用 ESP-IDF 6.1 的 PowerShell 终端；手动加载环境时，�
 - **额外格式枚举**：官方 UVC 只公开 `MJPEG`、`YUY2`、`H264`、`H265` 等格式；本地组件增加 `MJPEG_SW`、`UYVY`、`GRAY8`、`RGBP`，并在 descriptor parser 中识别 `UYVY`、`Y800/GREY`、`RGBP` 以及带软件编码标记的 MJPEG。
 - **MJPEG HW/SW 区分**：本地组件会根据 MJPEG format descriptor 的 `bmFlags` 区分 `MJPEG(HW)` 和 `MJPEG(SW)`。这会影响模式列表、质量控制项和调试日志；官方组件会把它们都当成普通 `MJPEG`。
 - **VideoControl 控件枚举 API**：本地组件增加 `uvc_host_ctrl_info_t` 和 `uvc_host_get_ctrl_list()`，从 VC descriptor 的 PU/XU `bmControls` 中解析可用控件。选择界面可以在 stream open 前显示 Advanced 控件入口；官方组件没有这个 public API。
-- **BULK URB sizing 行为**：部分摄像头会把 `dwMaxPayloadTransferSize` 上报成接近整帧大小。官方路径可能导致 BULK URB 申请过大；本地逻辑在 BULK endpoint 下优先使用调用方配置的 `urb_size`，避免不必要的大块内存占用。
+- **BULK 负载重组与 URB 大小**：优先使用调用方配置的 `urb_size`，并按短传输、ZLP 和协商的负载上限跨 URB 重组；带 EOF 的末包数据全部追加后才提交帧，避免 JPEG 帧尾丢失。
 - **ISOC MJPEG 完整帧过滤**：本地 `uvc_isoc.c` 会在回调前检查并裁剪 MJPEG 到 EOI，丢弃缺 SOI/EOI 的不完整帧，并控制异常日志频率，减少上层 JPEG 解码收到坏帧的概率。
-- **超时与帧边界保护**：EP0 超时后保留在途传输保护，避免重用或释放尚未完成的 URB；FID 边界和 EOF 共用 MJPEG 完整性检查，缺少 EOI 的帧仍会丢弃。
+- **超时与帧边界保护**：EP0 超时后保留在途传输保护，避免重用或释放尚未完成的 URB；ISOC 的 FID 边界和 EOF 共用 MJPEG 完整性检查，缺少 EOI 的帧仍会丢弃。
 
 ---
 
@@ -145,6 +175,9 @@ components/
 tests/
   test_mode_listing_policy.py  # 模式列表与确认提示策略检查
   display_viewport_test.cpp    # 显示视口与生成文案的原生回归检查
+  uvc_bulk_test.cpp            # BULK 帧重组与缓冲恢复的原生回归检查
+  run_uvc_bulk_tests.py        # 编译实际 UVC 驱动并运行 BULK 回归
+  uvc_host_stubs/              # 原生测试使用的 USB / FreeRTOS 桩
 
 docs/
   images/                    # README 界面截图
@@ -163,7 +196,7 @@ docs/
 | `CONFIG_LV_*` | LVGL 字体、绘制缓冲、日志与标准库适配 |
 | `main/app_runtime.cpp` 与 LVGL 端口的 `otool_lvgl_port_cfg_t` | LVGL 任务栈、优先级与 tick 定时 |
 
-应用层帧缓冲数量、URB 大小、音频缓冲，以及 **1280x720 推荐范围**和 **1920x1080 硬件限制**定义在 `main/app_internal.h` 中；高级控件默认值主要位于 `main/uvc/usb_task.cpp`。通过 `idf.py menuconfig` 修改 Kconfig 选项，修改默认配置时同步维护 `sdkconfig.defaults`。
+应用层帧缓冲数量、URB 大小、音频缓冲，以及 **1280x720 推荐范围**和 **1920x1080 硬件限制**定义在 `main/app_internal.h` 中；高级控件默认值主要位于 `main/uvc/usb_task.cpp`。通过 `idf.py menuconfig`（v3.1+ 配置使用 `idf.py -B build/rev3 menuconfig`）修改 Kconfig 选项，修改默认配置时同步维护对应的 `sdkconfig.defaults` / `sdkconfig.defaults.rev3`。
 
 ---
 

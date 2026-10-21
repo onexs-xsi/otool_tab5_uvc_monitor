@@ -17,6 +17,7 @@
 #include "uvc_types_priv.h"
 #include "uvc_descriptors_priv.h"
 #include "uvc_check_priv.h"
+#include "uvc_critical_priv.h"
 
 #define FLOAT_EQUAL(a, b) (fabsf(a - b) < 0.0001f) // For comparing float values with acceptable difference (epsilon value)
 
@@ -282,7 +283,11 @@ esp_err_t uvc_host_stream_control_commit(uvc_host_stream_hdl_t stream_hdl, const
              vs_format->h_res, vs_format->v_res, vs_format->fps, format_set.h_res, format_set.v_res, format_set.fps);
 
     // Commit the negotiated format
-    return uvc_control_commit(stream_hdl, &vs_result, vs_format);
+    ESP_RETURN_ON_ERROR(uvc_control_commit(stream_hdl, &vs_result, vs_format), TAG, "Could not commit Video Stream format");
+    UVC_ENTER_CRITICAL();
+    stream_hdl->dynamic.dwMaxPayloadTransferSize = vs_result.dwMaxPayloadTransferSize;
+    UVC_EXIT_CRITICAL();
+    return ESP_OK;
 }
 
 /* Generic unit, terminal and VideoStreaming controls */

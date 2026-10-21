@@ -1,0 +1,12 @@
+# Apply after sdkconfig.defaults for ESP32-P4 revision 3.1 and newer.
+# Tested on TAB5 with revision 3.2; early silicon uses sdkconfig.defaults alone.
+# CONFIG_ESP32P4_SELECTS_REV_LESS_V3 is not set
+CONFIG_ESP32P4_REV_MIN_301=y
+CONFIG_ESPTOOLPY_FLASHFREQ_40M=y
+
+# Keep the v3 bootloader within the space before the partition table at 0x8000.
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+
+# Use the board's USB Serial/JTAG port for logs and the monitor.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve image data in Bulk EOF payloads, including continuation URBs, instead of completing the frame before its tail is appended.
+- Track UVC payload boundaries separately from frame boundaries, honoring short transfers, ZLPs and the negotiated payload limit. Keep a new FID's error flag separate from the preceding frame.
+
+### Added
+
+- Add native ASan/UBSan regressions covering byte-for-byte JPEG reconstruction, malformed headers and frame-buffer recovery; run with `tests/run_uvc_bulk_tests.py` from the project root.
+
 ## [2.6.0] - 2026-09-16
 
 ### Added

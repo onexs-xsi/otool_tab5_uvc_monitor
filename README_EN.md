@@ -68,20 +68,50 @@ The selection screen includes UVC information, Audio, Advanced, `CONFIGURATION`,
 
 ## Build (ESP-IDF 6.1)
 
-The `esp32p4` target has been build-tested with ESP-IDF `v6.1` and GCC `15.2.0`. Initialize the pinned submodules, then run in an ESP-IDF 6.1 terminal:
+The `esp32p4` target has been build-tested with ESP-IDF `v6.1` and GCC `15.2.0`. Clone recursively to fetch the pinned submodules:
 
 ```powershell
-git submodule update --init --recursive
-idf.py build
+git clone --recursive https://github.com/onexs-xsi/otool_tab5_uvc_monitor.git
+cd otool_tab5_uvc_monitor
 ```
 
-On Windows, use the ESP-IDF 6.1 PowerShell terminal. To load the environment manually, run `export.ps1` from your installation path, for example `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`. Defaults are in `sdkconfig.defaults`; `sdkconfig` is generated during the build. The ESP32-P4 port supports PPA rotation automatically, enabled through the display initialization configuration.
+For an existing checkout, run `git submodule update --init --recursive`. Submodules use HTTPS URLs, so SSH keys are not required.
+
+On Windows, use the ESP-IDF 6.1 PowerShell terminal. To load the environment manually, run `export.ps1` from your installation path, for example `. C:\Espressif\frameworks\esp-idf-v6.1\export.ps1`. Select a configuration for your chip revision (check with `python -m esptool --chip esp32p4 -p COM3 chip-id`):
+
+- **Early ESP32-P4 silicon**: Use `sdkconfig.defaults` with `idf.py build`, then `idf.py -p COM3 flash monitor`.
+- **ESP32-P4 v3.1 and newer**: Add `sdkconfig.defaults.rev3`. This configuration was tested on TAB5 v3.2, enables USB Serial/JTAG logging, and reduces bootloader logging to fit before the partition table:
+
+```powershell
+idf.py -B build/rev3 -D SDKCONFIG=build/rev3/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.defaults.rev3" build
+```
+
+This generates a separate configuration and firmware under `build/rev3/`, avoiding reuse of an early-silicon `sdkconfig`. Flash through the TAB5 USB Serial/JTAG port with the tested watchdog reset method, then attach the log monitor:
+
+```powershell
+cd build/rev3
+python -m esptool --chip esp32p4 -p COM3 -b 460800 --before default-reset --after watchdog-reset write-flash '@flash_args'
+cd ../..
+idf.py -B build/rev3 -p COM3 monitor --no-reset
+```
+
+Replace `COM3` with your port and close other programs using that port before flashing or monitoring. The ESP32-P4 port supports PPA rotation automatically, enabled through the display initialization configuration.
 
 `dependencies.lock` pins the managed components used for this build: LVGL `9.6.0~1`, USB Host `1.6.0`, i2c_bus `1.5.2`, esp_codec_dev `1.5.11`, esp_lcd_touch `1.2.1`, and cmake_utilities `0.5.3`. Run `idf.py update-dependencies` to resolve the latest versions allowed by the component manifests again.
 
-The firmware output is `build/c145_tab5_as_camera_display_demo_idf600.bin`. LVGL flag calls, touch reads, and the LCD frame completion callback use the current APIs. A complete ESP-IDF 6.1 rebuild with `idf.py clean build` passed with 0 warnings and 0 errors.
+The default firmware output is `build/c145_tab5_as_camera_display_demo_idf600.bin`; the v3.1+ configuration writes it under `build/rev3/`. LVGL flag calls, touch reads, and the LCD frame completion callback use the current APIs. A complete ESP-IDF 6.1 rebuild passed with 0 warnings and 0 errors.
 
-Run `python tests/test_mode_listing_policy.py` to check mode listing and confirmation messages; all 9 checks pass. Native display cropping, scaling, and generated-message checks also passed with ASan/UBSan. This verification does not include flashing or camera/audio hardware tests.
+Hardware verification on TAB5 (ESP32-P4 v3.2) used a BULK camera negotiated at `MJPEG(HW) 1280x720 @30 FPS`, with three 16 KiB URBs. After the EOF payload fix, video displayed successfully at **11.38 / 11.75 FPS** over two consecutive windows of about 10 seconds. These are measured display rates; 30 FPS is the negotiated camera rate. Audio was not hardware-tested in this round.
+
+Run `python tests/test_mode_listing_policy.py` to check mode listing and confirmation messages; all 9 checks pass. Native display cropping, scaling, and generated-message checks also passed with ASan/UBSan.
+
+The Bulk reconstruction regression suite uses the actual UVC driver, a JPEG sample, and USB/FreeRTOS stubs. Run it on Linux or WSL with GCC/G++ and the resolved managed USB component:
+
+```sh
+python3 tests/run_uvc_bulk_tests.py --idf-path /path/to/esp-idf
+```
+
+It covers EOF payloads containing image data, payloads spanning URBs, ZLPs, negotiated payload boundaries, FID changes, and buffer recovery, with ASan/UBSan enabled.
 
 ---
 
@@ -96,9 +126,9 @@ This project keeps `components/usb_host_uac` and `components/usb_host_uvc` as lo
 - **Additional format enums**: The official UVC component exposes formats such as `MJPEG`, `YUY2`, `H264`, and `H265`; the local component adds `MJPEG_SW`, `UYVY`, `GRAY8`, and `RGBP`, and parses `UYVY`, `Y800/GREY`, `RGBP`, and software-encoded MJPEG descriptors.
 - **MJPEG HW/SW split**: The local parser distinguishes `MJPEG(HW)` from `MJPEG(SW)` by reading the MJPEG format descriptor `bmFlags`. This affects the mode list, quality controls, and diagnostics. The official component treats both as plain `MJPEG`.
 - **VideoControl control-list API**: The local component adds `uvc_host_ctrl_info_t` and `uvc_host_get_ctrl_list()`, parsing PU/XU `bmControls` from VC descriptors. This lets the selection UI expose Advanced controls before a stream is opened; the official component has no matching public API.
-- **BULK URB sizing behavior**: Some cameras report `dwMaxPayloadTransferSize` close to a full frame size. The local BULK path prioritizes the caller-provided `urb_size` so it does not allocate unnecessarily large URBs.
+- **BULK payload reconstruction and URB sizing**: Uses the caller-provided `urb_size` and reconstructs payloads across URBs using short transfers, ZLPs, and the negotiated payload limit. All data in an EOF payload is appended before frame delivery, preserving the JPEG tail.
 - **ISOC MJPEG complete-frame filtering**: The local `uvc_isoc.c` checks and trims MJPEG frames to EOI before callback, drops frames missing SOI/EOI, and rate-limits related logs so the upper JPEG decoder sees fewer corrupted frames.
-- **Timeout and frame-boundary protection**: In-flight EP0 transfers remain protected after a timeout so they cannot be reused or freed prematurely. FID-only boundaries use the same MJPEG validation as EOF, including rejection of frames without EOI.
+- **Timeout and frame-boundary protection**: In-flight EP0 transfers remain protected after a timeout so they cannot be reused or freed prematurely. ISOC FID-only boundaries use the same MJPEG validation as EOF, including rejection of frames without EOI.
 
 ---
 
@@ -145,6 +175,9 @@ components/
 tests/
   test_mode_listing_policy.py  # mode listing and confirmation policy checks
   display_viewport_test.cpp    # native viewport and generated-message checks
+  uvc_bulk_test.cpp            # native Bulk reconstruction and buffer recovery checks
+  run_uvc_bulk_tests.py        # compile the actual UVC driver and run Bulk regressions
+  uvc_host_stubs/              # USB/FreeRTOS stubs for native tests
 
 docs/
   images/                    # README screenshots
@@ -163,7 +196,7 @@ Component documentation, changelogs, examples, and tests live under their respec
 | `CONFIG_LV_*` | LVGL fonts, draw buffers, logging, and standard-library integration |
 | `main/app_runtime.cpp` and the LVGL port's `otool_lvgl_port_cfg_t` | LVGL task stack, priority, and tick timing |
 
-Application frame-buffer counts, URB size, audio buffers, the **1280x720 recommended range**, and the **1920x1080 hardware limit** are defined in `main/app_internal.h`. Advanced-control defaults mainly live in `main/uvc/usb_task.cpp`. Use `idf.py menuconfig` to change Kconfig options, and keep `sdkconfig.defaults` in sync when changing the defaults.
+Application frame-buffer counts, URB size, audio buffers, the **1280x720 recommended range**, and the **1920x1080 hardware limit** are defined in `main/app_internal.h`. Advanced-control defaults mainly live in `main/uvc/usb_task.cpp`. Use `idf.py menuconfig` (or `idf.py -B build/rev3 menuconfig` for v3.1+) to change Kconfig options, and keep the corresponding `sdkconfig.defaults` / `sdkconfig.defaults.rev3` in sync.
 
 ---
 
